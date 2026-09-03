@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 
+export const MAX_LEVEL = 30;
+
 export class Player {
   constructor() {
     this.pos = new THREE.Vector3(); // head position projected onto the floor
@@ -20,9 +22,10 @@ export class Player {
 
   // Returns how many levels were gained (can be >1 on a big pickup).
   addXp(v) {
+    if (this.level >= MAX_LEVEL) { this.xp = 0; return 0; }
     this.xp += v;
     let gained = 0;
-    while (this.xp >= this.xpToNext) {
+    while (this.xp >= this.xpToNext && this.level < MAX_LEVEL) {
       this.xp -= this.xpToNext;
       this.level++;
       this.xpToNext = this.xpNeeded(this.level);

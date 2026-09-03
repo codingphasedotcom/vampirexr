@@ -30,6 +30,11 @@ export class Sfx {
   shoot()   { this.tone({ f: 700, t: 0.05, type: 'triangle', vol: 0.03, slide: -350, key: 'shoot', gap: 0.05 }); }
   zap()     { this.tone({ f: 1200, t: 0.15, type: 'sawtooth', vol: 0.05, slide: -1000, key: 'zap', gap: 0.05 }); }
   hurt()    { this.tone({ f: 110, t: 0.25, type: 'sawtooth', vol: 0.08, slide: -60, key: 'hurt', gap: 0.3 }); }
+  gunshot() {
+    this.tone({ f: 170, t: 0.1, type: 'sawtooth', vol: 0.09, slide: -140, key: 'gun', gap: 0.03 });
+    this.tone({ f: 2400, t: 0.02, type: 'square', vol: 0.03, slide: -1500 });
+  }
+  roar()    { [70, 55, 45].forEach((f, i) => setTimeout(() => this.tone({ f, t: 0.5, type: 'sawtooth', vol: 0.1, slide: -20 }), i * 160)); }
   levelup() { [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.tone({ f, t: 0.18, vol: 0.05 }), i * 90)); }
   die()     { [300, 250, 200, 120].forEach((f, i) => setTimeout(() => this.tone({ f, t: 0.35, type: 'sawtooth', vol: 0.07, slide: -40 }), i * 200)); }
 }

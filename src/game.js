@@ -11,7 +11,8 @@ import { Particles } from './particles.js';
 import { Hud } from './hud.js';
 import { Menu } from './menu.js';
 import { Sfx } from './sfx.js';
-import { Wand } from './weapons.js';
+import { Wand, Gun } from './weapons.js';
+import { BOSSES, BossFx } from './bosses.js';
 import { getChoices } from './upgrades.js';
 import { World } from './world.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
@@ -26,8 +27,9 @@ const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THRE
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
 <b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
-<b>VR:</b> left stick to move, right stick to turn, point + trigger to pick upgrades.<br>
-<b>Hand tracking:</b> swing your arms to run, point + pinch to pick upgrades.`;
+<b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
+<b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
+A boss appears every 5 levels. Reach level 30 and slay the Vampire Lord to win.`;
 
 export class Game {
   constructor() {
@@ -49,6 +51,8 @@ export class Game {
     this.world = new World(this.scene);
     this.glow = new GlowLayer(this.scene);
     this.numbers = new DamageNumbers(this.scene);
+    this.bossFx = new BossFx(this.scene);
+    this.crosshair = document.getElementById('crosshair');
     this.playerLight = new THREE.PointLight(0xffc38a, 14, 11, 2);
     this.scene.add(this.playerLight);
 
@@ -61,6 +65,10 @@ export class Game {
     this.menu = new Menu(this.scene, this.camera, this.input);
     this.sfx = new Sfx();
     this.weapons = [];
+    this.boss = null;
+    this.bossQueue = [];
+    this.nextBoss = 0;
+    this.hpMul = 1;
     this.clock = new THREE.Clock();
     this.state = 'menu'; // menu | playing | levelup | gameover | paused
     this.time = 0;
@@ -162,11 +170,15 @@ export class Game {
     this.player.reset();
     this.enemies.reset();
     this.gems.reset();
+    this.bossFx.reset();
     for (const w of this.weapons) w.dispose();
     this.weapons = [];
+    this.addWeapon(Gun);
     this.addWeapon(Wand);
+    this.boss = null; this.bossQueue = []; this.nextBoss = 0; this.hpMul = 1;
     this.time = 0; this.spawnAcc = 0; this.nextWave = 40; this.waveNo = 0;
     this.pendingLevels = 0; this.hurtTimer = 0;
+    this.hud.toastTimer = 0;
     this.rig.position.set(0, 0, 0);
     if (!this.renderer.xr.isPresenting) {
       this.rig.rotation.y = 0; this.input.yaw = 0; this.input.pitch = 0;
@@ -199,6 +211,29 @@ export class Game {
       () => this.start(), this.renderer.xr.isPresenting);
   }
 
+  victory() {
+    this.state = 'gameover';
+    this.sfx.levelup();
+    const p = this.player;
+    this.menu.show('VICTORY!', `The Vampire Lord is dust.  ${fmtTime(this.time)}  ·  ${p.kills} kills`,
+      [{ kind: 'bonus', title: 'Play Again', sub: '', desc: 'Dawn breaks. Until next night.' }],
+      () => this.start(), this.renderer.xr.isPresenting);
+  }
+
+  damagePlayer(amount) {
+    this.player.hurt(amount);
+    this.hud.hurt();
+    this.sfx.hurt();
+  }
+
+  spawnBoss(def) {
+    const a = rand(0, Math.PI * 2), p = this.player.pos;
+    this.boss = this.enemies.spawnBoss(def, p.x + Math.cos(a) * 14, p.z + Math.sin(a) * 14, 1);
+    this.particles.burst(this.boss.x, def.y, this.boss.z, def.color, 60, 6);
+    this.hud.toast(`⚠ ${def.name.toUpperCase()} ⚠`, 4);
+    this.sfx.roar();
+  }
+
   // Central damage entry point so every weapon gets the same feedback (flash, numbers, sfx, gems, particles).
   hitEnemy(e, dmg, opts = {}) {
     const died = this.enemies.damage(e, dmg);
@@ -207,8 +242,13 @@ export class Game {
     if (died) {
       this.player.kills++;
       this.gems.spawn(e.x, e.z, e.t.xp);
-      this.particles.burst(e.x, e.t.y, e.z, e.t.color, 16, 4);
+      this.particles.burst(e.x, e.t.y, e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
       this.sfx.kill();
+      if (e.t.boss) {
+        this.boss = null;
+        this.hud.toast(`${e.t.name} slain!`, 3);
+        if (e.t.final) this.victory();
+      }
     }
   }
 
@@ -228,7 +268,8 @@ export class Game {
     this.numbers.update(dt);
     this.world.update(dt, fxTime.value, this.player.pos);
     this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
-    this.hud.update(dt, this.player, this.time);
+    this.hud.update(dt, this.player, this.time, this.boss);
+    this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');
     this.glow.end();
     if (xr) this.renderer.render(this.scene, this.camera);
     else this.composer.render();
@@ -279,8 +320,10 @@ export class Game {
     const p = this.player;
     this.time += dt;
     this.spawnDirector(dt);
+    if (this.boss) this.boss.t.ai(this.boss, dt, this);
     const contact = this.enemies.update(dt, p.pos, this.time);
     for (const w of this.weapons) w.update(dt);
+    this.bossFx.update(dt, this);
     this.gems.update(dt, p, (v) => {
       this.pendingLevels += p.addXp(v);
       this.sfx.pickup();
@@ -292,7 +335,11 @@ export class Game {
       if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); }
     }
     if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
-    if (this.pendingLevels > 0) this.openLevelUp();
+    if (this.state !== 'playing') return; // victory may have ended the run this frame
+    if (this.pendingLevels > 0) { this.openLevelUp(); return; }
+    // one boss per five levels, one at a time
+    while (this.nextBoss < BOSSES.length && p.level >= BOSSES[this.nextBoss].level) this.bossQueue.push(BOSSES[this.nextBoss++]);
+    if (!this.boss && this.bossQueue.length) this.spawnBoss(this.bossQueue.shift());
   }
 
   // ---------- spawning ----------
@@ -301,7 +348,7 @@ export class Game {
     const t = this.time;
     const rate = Math.min(0.5 + t * 0.025, 12); // enemies per second
     const m = t / 60;
-    const hpMul = 1 + m * 0.35 + m * m * 0.06; // quadratic so maxed builds still get overwhelmed
+    const hpMul = this.hpMul = 1 + m * 0.35 + m * m * 0.06; // quadratic so maxed builds still get overwhelmed
     this.spawnAcc += rate * dt;
     while (this.spawnAcc >= 1) {
       this.spawnAcc -= 1;

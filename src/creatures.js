@@ -6,11 +6,12 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // Animation happens in the vertex shader so hundreds of instances animate for free.
 
 const _c = new THREE.Color();
-const sphere = (r, w = 8, h = 6) => new THREE.SphereGeometry(r, w, h);
-const box = (x, y, z) => new THREE.BoxGeometry(x, y, z);
-const cone = (r, h, n = 6) => new THREE.ConeGeometry(r, h, n);
+export const sphere = (r, w = 8, h = 6) => new THREE.SphereGeometry(r, w, h);
+export const box = (x, y, z) => new THREE.BoxGeometry(x, y, z);
+export const cone = (r, h, n = 6) => new THREE.ConeGeometry(r, h, n);
+export const cyl = (r1, r2, h, n = 8) => new THREE.CylinderGeometry(r1, r2, h, n);
 
-function part(g, color, { p = [0, 0, 0], r = [0, 0, 0], s = 1, anim = 0, glow = 0 } = {}) {
+export function part(g, color, { p = [0, 0, 0], r = [0, 0, 0], s = 1, anim = 0, glow = 0 } = {}) {
   if (Array.isArray(s)) g.scale(s[0], s[1], s[2]); else g.scale(s, s, s);
   g.rotateX(r[0]); g.rotateY(r[1]); g.rotateZ(r[2]);
   g.translate(p[0], p[1], p[2]);

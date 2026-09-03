@@ -4,6 +4,7 @@ const MAX = 1500;
 const dummy = new THREE.Object3D();
 const _c = new THREE.Color();
 const TIERS = [
+  { min: 30, color: new THREE.Color(0xffd166), scale: 2.3 },
   { min: 8, color: new THREE.Color(0xff5cf0), scale: 1.6 },
   { min: 3, color: new THREE.Color(0x6bff7a), scale: 1.25 },
   { min: 0, color: new THREE.Color(0x4de1ff), scale: 1 },

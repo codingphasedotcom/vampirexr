@@ -132,6 +132,7 @@ export class Menu {
     const item = this.items[i];
     if (!item || !this.open) return;
     this.hide();
+    this.input.clearSelecting();
     this.onPick(item);
   }
 }

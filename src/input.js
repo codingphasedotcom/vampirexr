@@ -9,6 +9,7 @@ export class Input {
     this.keys = new Set();
     this.yaw = 0; this.pitch = 0;
     this.clickPressed = false;
+    this.mouseDown = false; // left button held while pointer-locked (desktop gun)
     this.onKey = null;
     this.onUnlockedClick = null;
     this.onHands = null;
@@ -26,9 +27,11 @@ export class Input {
     });
     dom.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      if (document.pointerLockElement === dom) this.clickPressed = true;
+      if (document.pointerLockElement === dom) { this.clickPressed = true; this.mouseDown = true; }
       else this.onUnlockedClick?.();
     });
+    window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseDown = false; });
+    document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== dom) this.mouseDown = false; });
 
     this.controllers = [];
     this.hands = [];
@@ -57,13 +60,14 @@ export class Input {
       rig.add(hand);
       this.hands.push(hand);
 
-      const c = { obj, laser, source: null, hand: null, selectEdge: false, prev: null };
+      const c = { obj, laser, source: null, hand: null, selectEdge: false, selecting: false, prev: null };
       obj.addEventListener('connected', (e) => {
         c.source = e.data; c.hand = e.data.handedness;
         if (e.data.hand && !this.handsSeen) { this.handsSeen = true; this.onHands?.(); }
       });
       obj.addEventListener('disconnected', () => { c.source = null; c.hand = null; });
-      obj.addEventListener('selectstart', () => { c.selectEdge = true; });
+      obj.addEventListener('selectstart', () => { c.selectEdge = true; c.selecting = true; });
+      obj.addEventListener('selectend', () => { c.selecting = false; });
       this.controllers.push(c);
     }
   }
@@ -136,4 +140,7 @@ export class Input {
   }
 
   consumeClick() { const v = this.clickPressed; this.clickPressed = false; return v; }
+
+  // Called after a menu pick so the same press doesn't immediately fire the gun.
+  clearSelecting() { for (const c of this.controllers) c.selecting = false; this.mouseDown = false; }
 }

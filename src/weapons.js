@@ -6,6 +6,8 @@ const dummy = new THREE.Object3D();
 const BOLT_COLOR = new THREE.Color(0x66d4ff);
 const ORB_COLOR = new THREE.Color(0xffc94d);
 const ZAP_COLOR = new THREE.Color(0xbfe8ff);
+const TRACER_COLOR = new THREE.Color(0xffe08a);
+const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _m = new THREE.Vector3(), _q = new THREE.Quaternion();
 
 // Every weapon auto-fires; the player only moves. Stats scale with level and the player's passives.
 // update(dt) runs while playing; draw() runs every frame so visuals persist through the level-up pause.
@@ -310,4 +312,124 @@ export class Lightning extends Weapon {
   }
 }
 
-export const WEAPONS = [Wand, Orbs, Aura, Lightning];
+// A simple pistol: body, barrel, grip, and a muzzle point for tracers / flashes.
+function makeGunModel() {
+  const g = new THREE.Group();
+  const dark = new THREE.MeshLambertMaterial({ color: 0x2a2a34 });
+  const metal = new THREE.MeshLambertMaterial({ color: 0x9a9aae });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, 0.2), dark); body.position.set(0, 0.01, -0.08);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.16, 8).rotateX(Math.PI / 2), metal); barrel.position.set(0, 0.03, -0.24);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.1, 0.055), dark); grip.position.set(0, -0.06, 0.01); grip.rotation.x = 0.35;
+  const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0.03, -0.33);
+  g.add(body, barrel, grip, muzzle);
+  g.muzzle = muzzle; g.kick = 0; g.baseZ = 0; g.baseRx = 0;
+  return g;
+}
+
+// The player's own aimed weapon. VR: one on each controller, hold trigger (or pinch). Desktop: hold left mouse.
+export class Gun extends Weapon {
+  static id = 'gun';
+  static title = 'Revolver';
+  static damage(l) { return 20 + l * 6; }
+  static rate(l) { return 3 + l * 0.3; } // shots per second
+  static describe(l) {
+    if (l === 1) return 'Your sidearm. Aim it yourself.';
+    return `${Gun.damage(l)} damage, ${Gun.rate(l).toFixed(1)} shots/s${l >= 5 ? ', pierces' : ''}.`;
+  }
+
+  constructor(game) {
+    super(game);
+    this.tracers = [];
+    this.guns = game.input.controllers.map((c) => { const gm = makeGunModel(); c.obj.add(gm); return gm; });
+    this.deskGun = makeGunModel();
+    this.deskGun.position.set(0.22, -0.2, -0.45);
+    this.deskGun.rotation.set(0, -0.06, 0);
+    this.deskGun.baseZ = -0.45;
+    game.camera.add(this.deskGun);
+  }
+
+  update(dt) {
+    const g = this.game, xr = g.renderer.xr.isPresenting;
+    this.timer -= dt;
+    if (this.timer > 0) return;
+    let fired = false;
+    if (xr) {
+      g.input.controllers.forEach((c, i) => {
+        if (!c.selecting || !c.source) return;
+        const gm = this.guns[i];
+        gm.muzzle.getWorldPosition(_o);
+        gm.getWorldQuaternion(_q);
+        _d.set(0, 0, -1).applyQuaternion(_q);
+        this.fire(_o, _d, gm);
+        fired = true;
+      });
+    } else if (g.input.mouseDown) {
+      // aim from the camera so the crosshair is exact; the tracer still starts at the muzzle
+      g.camera.getWorldPosition(_o);
+      g.camera.getWorldQuaternion(_q);
+      _d.set(0, 0, -1).applyQuaternion(_q);
+      this.fire(_o, _d, this.deskGun);
+      fired = true;
+    }
+    if (fired) this.timer = this.cd(1 / Gun.rate(this.level));
+  }
+
+  fire(origin, dir, gm) {
+    const g = this.game, dmg = this.dmg(Gun.damage(this.level)), pierce = this.level >= 5 ? 3 : 1;
+    // hitscan: ray vs. a sphere around each enemy's centre, nearest first
+    const hits = [];
+    for (const e of g.enemies.list) {
+      if (e.dead) continue;
+      const ocx = e.x - origin.x, ocy = e.t.y - origin.y, ocz = e.z - origin.z;
+      const tca = ocx * dir.x + ocy * dir.y + ocz * dir.z;
+      if (tca < 0 || tca > 60) continue;
+      const r = Math.max(0.4, e.t.size * 0.6);
+      const d2 = ocx * ocx + ocy * ocy + ocz * ocz - tca * tca;
+      if (d2 > r * r) continue;
+      hits.push({ e, t: tca - Math.sqrt(r * r - d2) });
+    }
+    hits.sort((a, b) => a.t - b.t);
+    let end = 60;
+    for (let i = 0; i < Math.min(pierce, hits.length); i++) {
+      const h = hits[i];
+      g.hitEnemy(h.e, dmg);
+      g.particles.burst(origin.x + dir.x * h.t, origin.y + dir.y * h.t, origin.z + dir.z * h.t, 0xffe08a, 6, 3);
+      end = h.t + 0.3;
+    }
+    gm.muzzle.getWorldPosition(_m);
+    this.tracers.push({ x0: _m.x, y0: _m.y, z0: _m.z, x1: origin.x + dir.x * end, y1: origin.y + dir.y * end, z1: origin.z + dir.z * end, life: 1 });
+    gm.kick = 1;
+    g.sfx.gunshot();
+  }
+
+  draw(dt) {
+    const g = this.game, xr = g.renderer.xr.isPresenting, glow = g.glow;
+    this.deskGun.visible = !xr;
+    for (let i = 0; i < this.guns.length; i++) this.guns[i].visible = xr && !!g.input.controllers[i].source;
+    for (const gm of [...this.guns, this.deskGun]) {
+      gm.kick = Math.max(0, gm.kick - dt * 8);
+      gm.position.z = gm.baseZ + gm.kick * 0.04;
+      gm.rotation.x = gm.baseRx + gm.kick * 0.25;
+      if (gm.visible && gm.kick > 0.5) { gm.muzzle.getWorldPosition(_m); glow.add(_m.x, _m.y, _m.z, 0.6, TRACER_COLOR, gm.kick); }
+    }
+    let w = 0;
+    for (const t of this.tracers) {
+      t.life -= dt * 7;
+      if (t.life <= 0) continue;
+      const len = Math.hypot(t.x1 - t.x0, t.y1 - t.y0, t.z1 - t.z0), n = Math.min(60, Math.ceil(len / 0.5));
+      for (let k = 0; k <= n; k++) {
+        const f = k / n;
+        glow.add(t.x0 + (t.x1 - t.x0) * f, t.y0 + (t.y1 - t.y0) * f, t.z0 + (t.z1 - t.z0) * f, 0.22, TRACER_COLOR, t.life * 0.7);
+      }
+      this.tracers[w++] = t;
+    }
+    this.tracers.length = w;
+  }
+
+  dispose() {
+    for (const gm of this.guns) gm.parent?.remove(gm);
+    this.game.camera.remove(this.deskGun);
+  }
+}
+
+export const WEAPONS = [Gun, Wand, Orbs, Aura, Lightning];

@@ -20,6 +20,7 @@ const cellKey = (cx, cz) => (cx + 2048) * 4096 + (cz + 2048);
 
 export class EnemyManager {
   constructor(scene) {
+    this.scene = scene;
     this.list = [];
     this.meshes = {};
     this.phases = {};
@@ -40,9 +41,25 @@ export class EnemyManager {
       this.phases[name] = phase;
       this.counts[name] = 0;
     }
+    this.counts.boss = 0;
   }
 
   get alive() { return this.list.length; }
+
+  // Bosses get their own Mesh (not instanced) and drive their own movement via t.ai.
+  spawnBoss(def, x, z, hpMul = 1) {
+    const geo = def.build();
+    geo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
+    const mesh = new THREE.Mesh(geo, creatureMaterial(def.anim[0], def.anim[1]));
+    mesh.frustumCulled = false;
+    this.scene.add(mesh);
+    const t = { ...def, boss: true };
+    const hp = def.hp * hpMul;
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, s: {}, dmgMul: 1 };
+    this.list.push(e);
+    this.counts.boss++;
+    return e;
+  }
 
   spawn(type, x, z, hpMul = 1) {
     if (this.counts[type] >= MAX[type]) return null;
@@ -63,6 +80,7 @@ export class EnemyManager {
   }
 
   knockback(e, fromX, fromZ, force) {
+    if (e.t.boss) return;
     const dx = e.x - fromX, dz = e.z - fromZ, d = Math.hypot(dx, dz) || 1;
     force /= e.t.size; // big enemies barely budge
     e.kx += dx / d * force; e.kz += dz / d * force;
@@ -92,7 +110,7 @@ export class EnemyManager {
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
-      if (e.dead) this.counts[e.type]--;
+      if (e.dead) { this.counts[e.type]--; if (e.mesh) this.scene.remove(e.mesh); }
       else this.list[w++] = e;
     }
     this.list.length = w;
@@ -110,11 +128,11 @@ export class EnemyManager {
     for (const e of this.list) {
       const dx = px - e.x, dz = pz - e.z, d = Math.hypot(dx, dz) || 0.001;
       const stop = e.t.size * 0.5 + 0.45;
-      if (d > stop) {
+      if (!e.t.boss && d > stop) {
         const s = Math.min(e.t.speed * dt, d - stop);
         e.x += dx / d * s; e.z += dz / d * s;
       }
-      if (d < stop + 0.3) contact += e.t.dmg * dt;
+      if (d < stop + 0.3) contact += e.t.dmg * (e.dmgMul || 1) * dt;
 
       if (e.kx || e.kz) {
         e.x += e.kx * dt; e.z += e.kz * dt;
@@ -124,6 +142,7 @@ export class EnemyManager {
         if (Math.abs(e.kz) < 0.01) e.kz = 0;
       }
 
+      if (e.t.boss) continue; // bosses shove the horde, never the reverse
       const cx = Math.floor(e.x / CELL), cz = Math.floor(e.z / CELL);
       for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
         const a = this.grid.get(cellKey(cx + ox, cz + oz));
@@ -143,6 +162,13 @@ export class EnemyManager {
     const idx = {};
     for (const n in this.meshes) idx[n] = 0;
     for (const e of this.list) {
+      if (e.mesh) {
+        e.mesh.position.set(e.x, e.t.fly ? Math.sin(time * 3 + e.phase) * 0.3 : 0, e.z);
+        e.mesh.rotation.y = Math.atan2(px - e.x, pz - e.z);
+        e.mesh.material.emissive.setScalar(e.flash * 0.8);
+        if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
+        continue;
+      }
       const m = this.meshes[e.type], i = idx[e.type]++;
       const bob = e.t.fly ? Math.sin(time * 5 + e.phase) * 0.18 : 0;
       dummy.position.set(e.x, bob, e.z);
@@ -165,8 +191,10 @@ export class EnemyManager {
   }
 
   reset() {
+    for (const e of this.list) if (e.mesh) this.scene.remove(e.mesh);
     this.list.length = 0;
     this.grid.clear();
     for (const n in this.meshes) { this.counts[n] = 0; this.meshes[n].count = 0; }
+    this.counts.boss = 0;
   }
 }
