@@ -9,7 +9,6 @@ export class Input {
     this.keys = new Set();
     this.yaw = 0; this.pitch = 0;
     this.clickPressed = false;
-    this.snapReady = true;
     this.onKey = null;
     this.onUnlockedClick = null;
     this.onHands = null;
@@ -119,15 +118,15 @@ export class Input {
     return l > 1 ? { x: x / l, y: y / l } : { x, y };
   }
 
-  // -1 / 0 / 1, edge-triggered on the right stick
-  getSnapTurn() {
+  // Right stick x in [-1, 1] for smooth turning (0 inside the deadzone).
+  getTurnAxis() {
     if (!this.axes('left')) return 0; // single-controller setups use the one stick to move
     const a = this.axes('right');
     if (!a) return 0;
-    if (Math.abs(a.x) < 0.6) { this.snapReady = true; return 0; }
-    if (!this.snapReady) return 0;
-    this.snapReady = false;
-    return Math.sign(a.x);
+    const dz = 0.2;
+    if (Math.abs(a.x) < dz) return 0;
+    const v = (Math.abs(a.x) - dz) / (1 - dz);
+    return Math.sign(a.x) * v * v; // quadratic curve: fine control near centre, fast at full tilt
   }
 
   consumeSelect() {

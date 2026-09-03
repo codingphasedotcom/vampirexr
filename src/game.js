@@ -20,12 +20,13 @@ import { rand, fmtTime } from './utils.js';
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
 const MAX_ENEMIES = 500;
+const TURN_SPEED = Math.PI * 0.67; // rad/s at full stick deflection (~120°/s)
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
 <b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
-<b>VR:</b> left stick to move, right stick to snap turn, point + trigger to pick upgrades.<br>
+<b>VR:</b> left stick to move, right stick to turn, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, point + pinch to pick upgrades.`;
 
 export class Game {
@@ -241,8 +242,8 @@ export class Game {
       this.camera.rotation.x = this.input.pitch;
     } else {
       this.input.updateArmSwing(dt);
-      const snap = this.input.getSnapTurn();
-      if (snap) this.snapTurn(-snap * Math.PI / 4);
+      const turn = this.input.getTurnAxis();
+      if (turn) this.rotateRig(-turn * TURN_SPEED * dt);
     }
     if (this.state === 'playing') {
       const mv = this.input.getMove(xr);
@@ -266,7 +267,7 @@ export class Game {
   }
 
   // Rotate the rig around the head so the player stays in place.
-  snapTurn(angle) {
+  rotateRig(angle) {
     const h = this.headPos();
     _tmp.set(this.rig.position.x - h.x, 0, this.rig.position.z - h.z).applyAxisAngle(UP, angle);
     this.rig.position.x = h.x + _tmp.x;
