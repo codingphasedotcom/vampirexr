@@ -31,7 +31,7 @@ export class Hud {
   }
 
   hurt() { this.flash = Math.min(0.55, this.flash + 0.28); }
-  toast(text) { this.toastText = text; this.toastTimer = 2.5; }
+  toast(text, seconds = 2.5) { this.toastText = text; this.toastTimer = seconds; }
 
   update(dt, player, time) {
     this.flash = Math.max(0, this.flash - dt * 1.2);
@@ -62,6 +62,7 @@ export class Hud {
     g.font = 'bold 32px system-ui, sans-serif';
     if (this.toastTimer > 0) {
       g.fillStyle = '#ffd166';
+      if (g.measureText(this.toastText).width > 480) g.font = 'bold 22px system-ui, sans-serif';
       g.fillText(this.toastText, 256, 106);
     } else {
       g.fillStyle = '#fff';

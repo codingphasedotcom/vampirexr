@@ -19,6 +19,7 @@ WebXR needs a secure context, so `dev:vr` serves over HTTPS with a self-signed c
 | Move | WASD | Left thumbstick |
 | Look / turn | Mouse | Head + right-stick snap turn |
 | Pick upgrade | Look + click, or 1 / 2 / 3 | Point controller + trigger |
+| Hand tracking (no controllers) | — | Swing arms to run, point + pinch to pick |
 
 Weapons fire automatically. Collect the gems enemies drop to level up.
 

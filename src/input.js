@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
 import { clamp } from './utils.js';
 
 // Unifies desktop (WASD + mouse look) and VR (thumbsticks + trigger) input.
@@ -11,6 +12,11 @@ export class Input {
     this.snapReady = true;
     this.onKey = null;
     this.onUnlockedClick = null;
+    this.onHands = null;
+    this.handsSeen = false;
+    // arm-swing locomotion state (hand tracking without controllers)
+    this.swing = 0;
+    this.swingMove = 0;
 
     window.addEventListener('keydown', (e) => { this.keys.add(e.code); this.onKey?.(e.code); });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -26,6 +32,8 @@ export class Input {
     });
 
     this.controllers = [];
+    this.hands = [];
+    const handFactory = new XRHandModelFactory();
     for (let i = 0; i < 2; i++) {
       const obj = renderer.xr.getController(i);
       const laser = new THREE.Line(
@@ -44,8 +52,17 @@ export class Input {
       ));
       rig.add(grip);
 
-      const c = { obj, laser, source: null, hand: null, selectEdge: false };
-      obj.addEventListener('connected', (e) => { c.source = e.data; c.hand = e.data.handedness; });
+      // tracked hands render as simple spheres; no external model files needed
+      const hand = renderer.xr.getHand(i);
+      hand.add(handFactory.createHandModel(hand, 'spheres'));
+      rig.add(hand);
+      this.hands.push(hand);
+
+      const c = { obj, laser, source: null, hand: null, selectEdge: false, prev: null };
+      obj.addEventListener('connected', (e) => {
+        c.source = e.data; c.hand = e.data.handedness;
+        if (e.data.hand && !this.handsSeen) { this.handsSeen = true; this.onHands?.(); }
+      });
       obj.addEventListener('disconnected', () => { c.source = null; c.hand = null; });
       obj.addEventListener('selectstart', () => { c.selectEdge = true; });
       this.controllers.push(c);
@@ -66,11 +83,30 @@ export class Input {
     return { x: a.length >= 4 ? a[2] : a[0] || 0, y: a.length >= 4 ? a[3] : a[1] || 0 };
   }
 
+  get usingHands() { return this.controllers.some((c) => c.source?.hand); }
+
+  // Arm-swing locomotion: wrist speed (in play-space coordinates, so rig movement doesn't count)
+  // is smoothed and mapped to a forward speed. Call every XR frame.
+  updateArmSwing(dt) {
+    let total = 0, n = 0;
+    for (let i = 0; i < 2; i++) {
+      const c = this.controllers[i];
+      const wrist = this.hands[i].joints?.wrist;
+      if (!c.source?.hand || !wrist || !wrist.visible) { c.prev = null; continue; }
+      if (c.prev) { total += c.prev.distanceTo(wrist.position) / Math.max(dt, 1e-3); n++; }
+      else c.prev = new THREE.Vector3();
+      c.prev.copy(wrist.position);
+    }
+    const raw = n ? total / n : 0;
+    this.swing += (raw - this.swing) * Math.min(1, dt * 6);
+    this.swingMove = clamp((this.swing - 0.45) / 1.6, 0, 1);
+  }
+
   // {x: strafe, y: forward}, each in [-1, 1]
   getMove(xr) {
     if (xr) {
       const a = this.axes('left') || this.axes('right');
-      if (!a) return { x: 0, y: 0 };
+      if (!a) return { x: 0, y: this.swingMove }; // no thumbstick: arm swing drives forward motion
       const dz = 0.15;
       return { x: Math.abs(a.x) > dz ? a.x : 0, y: Math.abs(a.y) > dz ? -a.y : 0 };
     }

@@ -25,7 +25,8 @@ const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THRE
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
 <b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
-<b>VR:</b> left stick to move, right stick to snap turn, point + trigger to pick upgrades.`;
+<b>VR:</b> left stick to move, right stick to snap turn, point + trigger to pick upgrades.<br>
+<b>Hand tracking:</b> swing your arms to run, point + pinch to pick upgrades.`;
 
 export class Game {
   constructor() {
@@ -98,6 +99,7 @@ export class Game {
       else this.start();
     };
     this.input.onKey = (code) => this.onKey(code);
+    this.input.onHands = () => this.hud.toast('Hands: swing arms to run · pinch to pick', 5);
     this.input.onUnlockedClick = () => {
       if (this.state === 'levelup' || this.state === 'gameover') this.input.requestPointerLock();
     };
@@ -238,6 +240,7 @@ export class Game {
       this.rig.rotation.y = this.input.yaw;
       this.camera.rotation.x = this.input.pitch;
     } else {
+      this.input.updateArmSwing(dt);
       const snap = this.input.getSnapTurn();
       if (snap) this.snapTurn(-snap * Math.PI / 4);
     }
