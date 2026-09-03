@@ -17,6 +17,7 @@ export class Input {
     // arm-swing locomotion state (hand tracking without controllers)
     this.swing = 0;
     this.swingMove = 0;
+    this.snapReady = true;
 
     window.addEventListener('keydown', (e) => { this.keys.add(e.code); this.onKey?.(e.code); });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -60,7 +61,7 @@ export class Input {
       rig.add(hand);
       this.hands.push(hand);
 
-      const c = { obj, laser, source: null, hand: null, selectEdge: false, selecting: false, prev: null };
+      const c = { obj, grip, hand3d: hand, laser, source: null, hand: null, selectEdge: false, selecting: false, prev: null, menuHeld: false };
       obj.addEventListener('connected', (e) => {
         c.source = e.data; c.hand = e.data.handedness;
         if (e.data.hand && !this.handsSeen) { this.handsSeen = true; this.onHands?.(); }
@@ -120,6 +121,29 @@ export class Input {
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
     const l = Math.hypot(x, y);
     return l > 1 ? { x: x / l, y: y / l } : { x, y };
+  }
+
+  // -1 / 0 / 1, edge-triggered on the right stick (snap-turn mode)
+  getSnapTurn() {
+    if (!this.axes('left')) return 0;
+    const a = this.axes('right');
+    if (!a) return 0;
+    if (Math.abs(a.x) < 0.6) { this.snapReady = true; return 0; }
+    if (!this.snapReady) return 0;
+    this.snapReady = false;
+    return Math.sign(a.x);
+  }
+
+  // Edge-triggered press of X/Y/A/B on either controller (pause / menu).
+  getMenuPress() {
+    let pressed = false;
+    for (const c of this.controllers) {
+      const b = c.source?.gamepad?.buttons;
+      const now = !!(b && ((b[4] && b[4].pressed) || (b[5] && b[5].pressed)));
+      if (now && !c.menuHeld) pressed = true;
+      c.menuHeld = now;
+    }
+    return pressed;
   }
 
   // Right stick x in [-1, 1] for smooth turning (0 inside the deadzone).

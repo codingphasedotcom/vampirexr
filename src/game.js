@@ -17,11 +17,11 @@ import { getChoices } from './upgrades.js';
 import { World } from './world.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
 import { rand, fmtTime } from './utils.js';
+import { settings, saveSettings } from './settings.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
 const MAX_ENEMIES = 500;
-const TURN_SPEED = Math.PI * 0.67; // rad/s at full stick deflection (~120°/s)
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 
@@ -62,6 +62,7 @@ export class Game {
     this.gems = new Gems(this.scene);
     this.particles = new Particles(this.scene);
     this.hud = new Hud(this.camera);
+    this.scene.add(this.hud.anchor);
     this.menu = new Menu(this.scene, this.camera, this.input);
     this.sfx = new Sfx();
     this.weapons = [];
@@ -86,6 +87,7 @@ export class Game {
     this.ovMsg = document.getElementById('ovMsg');
     this.playBtn = document.getElementById('playDesktop');
     this.bindUi();
+    this.bindSettings();
     this.setupXR();
 
     window.addEventListener('resize', () => {
@@ -125,6 +127,57 @@ export class Game {
     });
   }
 
+  bindSettings() {
+    const bind = (id, key, parse = (v) => v) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.value = String(typeof settings[key] === 'boolean' ? (settings[key] ? 1 : 0) : settings[key]);
+      el.onchange = () => { settings[key] = parse(el.value); saveSettings(); };
+    };
+    bind('setTurn', 'turn');
+    bind('setVignette', 'vignette', (v) => v === '1');
+    bind('setHud', 'hud');
+  }
+
+  // ---------- in-world menus (VR) ----------
+
+  showVrMenu() {
+    this.state = 'menu';
+    this.menu.show('SURVIVOR XR', 'Point at a card and pull the trigger (or pinch)', [
+      { kind: 'weapon', title: 'Start', sub: 'Play', desc: 'Survive the night. Weapons fire on their own; you aim the revolver.', apply: () => this.start() },
+      { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
+    ], (item) => item.apply(), true);
+  }
+
+  showPauseMenu() {
+    this.menu.show('PAUSED', 'Press X / Y / A / B again to resume', [
+      { kind: 'weapon', title: 'Resume', sub: '', desc: 'Back into the fight.', apply: () => this.resume() },
+      { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showPauseMenu()) },
+      { kind: 'bonus', title: 'Restart', sub: '', desc: 'Abandon this run and start over.', apply: () => this.start() },
+    ], (item) => item.apply(), true);
+  }
+
+  showSettings(back) {
+    const toggle = (key, values) => { settings[key] = values[(values.indexOf(settings[key]) + 1) % values.length]; saveSettings(); this.showSettings(back); };
+    this.menu.show('SETTINGS', 'Select a card to change it', [
+      { kind: 'passive', title: settings.turn === 'snap' ? 'Turn: Snap 45°' : 'Turn: Smooth', sub: 'Turning',
+        desc: settings.turn === 'snap' ? 'Right stick jumps in 45° steps. Most comfortable.' : 'Right stick turns continuously. Can cause nausea.',
+        apply: () => toggle('turn', ['smooth', 'snap']) },
+      { kind: 'passive', title: `Vignette: ${settings.vignette ? 'On' : 'Off'}`, sub: 'Comfort',
+        desc: 'Darkens the edges of your view while moving or turning.', apply: () => toggle('vignette', [true, false]) },
+      { kind: 'passive', title: settings.hud === 'wrist' ? 'HUD: Wrist' : 'HUD: Fixed', sub: 'Display',
+        desc: settings.hud === 'wrist' ? 'Stats float above your off-hand. Boss HP and alerts stay in view.' : 'Stats are locked to the bottom of your view.',
+        apply: () => toggle('hud', ['wrist', 'camera']) },
+      { kind: 'weapon', title: 'Back', sub: '', desc: 'Return.', apply: back },
+    ], (item) => item.apply(), true);
+  }
+
+  resume() {
+    this.menu.hide();
+    this.clock.getDelta();
+    this.state = 'playing';
+  }
+
   showOverlay(title, msg, btn) {
     this.ovTitle.textContent = title;
     this.ovMsg.innerHTML = msg;
@@ -147,19 +200,22 @@ export class Game {
       };
       holder.appendChild(b);
     });
-    this.renderer.xr.addEventListener('sessionstart', () => this.start());
+    this.renderer.xr.addEventListener('sessionstart', () => {
+      this.hud.setMode(settings.hud);
+      this.showVrMenu();
+    });
     this.renderer.xr.addEventListener('sessionend', () => {
       this.state = 'menu';
       this.menu.hide();
+      this.hud.setMode('camera');
       this.showOverlay('SURVIVOR XR', INTRO, 'Play on Desktop');
     });
   }
 
   onKey(code) {
-    if (this.state !== 'levelup' && this.state !== 'gameover') return;
-    if (code === 'Digit1' || code === 'Numpad1') this.menu.pick(0);
-    else if (code === 'Digit2' || code === 'Numpad2') this.menu.pick(1);
-    else if (code === 'Digit3' || code === 'Numpad3') this.menu.pick(2);
+    if (!this.menu.open) return;
+    const m = /^(?:Digit|Numpad)([1-9])$/.exec(code);
+    if (m) this.menu.pick(Number(m[1]) - 1);
     else if (code === 'Enter' || code === 'Space') { if (this.state === 'gameover') this.menu.pick(0); }
   }
 
@@ -259,9 +315,14 @@ export class Game {
     const xr = this.renderer.xr.isPresenting;
     fxTime.value += dt;
     this.glow.begin();
+    if (xr && this.input.getMenuPress()) {
+      if (this.state === 'playing') { this.state = 'paused'; this.showPauseMenu(); }
+      else if (this.state === 'paused') this.resume();
+    }
     this.updateMovement(dt, xr);
     if (this.state === 'playing') this.tick(dt);
-    else if (this.state === 'levelup' || this.state === 'gameover') this.menu.update(xr);
+    else if (this.menu.open) this.menu.update(xr);
+    if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
     this.particles.update(dt);
@@ -278,16 +339,23 @@ export class Game {
   headPos() { return this.camera.getWorldPosition(_head); }
 
   updateMovement(dt, xr) {
+    let moving = 0, turning = 0;
     if (!xr) {
       this.rig.rotation.y = this.input.yaw;
       this.camera.rotation.x = this.input.pitch;
     } else {
       this.input.updateArmSwing(dt);
-      const turn = this.input.getTurnAxis();
-      if (turn) this.rotateRig(-turn * TURN_SPEED * dt);
+      if (settings.turn === 'snap') {
+        const snap = this.input.getSnapTurn();
+        if (snap) { this.rotateRig(-snap * Math.PI / 4); turning = 1; }
+      } else {
+        const turn = this.input.getTurnAxis();
+        if (turn) { this.rotateRig(-turn * settings.turnSpeed * Math.PI / 180 * dt); turning = Math.abs(turn); }
+      }
     }
     if (this.state === 'playing') {
       const mv = this.input.getMove(xr);
+      moving = Math.min(1, Math.hypot(mv.x, mv.y));
       if (mv.x || mv.y) {
         this.camera.getWorldQuaternion(_q);
         _fwd.set(0, 0, -1).applyQuaternion(_q); _fwd.y = 0; _fwd.normalize();
@@ -305,6 +373,21 @@ export class Game {
     }
     const h = this.headPos();
     this.player.pos.set(h.x, 0, h.z);
+    this.hud.setComfort(xr && settings.vignette ? Math.min(1, moving * 0.85 + turning * 0.9) : 0);
+  }
+
+  // Float the wrist HUD above the off-hand (left by default), facing the head. Works for controllers and tracked hands.
+  updateWristAnchor() {
+    const cs = this.input.controllers;
+    const c = cs.find((c) => c.source && c.hand === 'left') || cs.find((c) => c.source);
+    if (!c) { this.hud.anchor.visible = false; return; }
+    const src = c.source.hand ? c.hand3d.joints?.wrist : c.grip;
+    if (!src) { this.hud.anchor.visible = false; return; }
+    src.getWorldPosition(_tmp);
+    _tmp.y += 0.12;
+    this.hud.anchor.position.copy(_tmp);
+    this.hud.anchor.lookAt(this.headPos());
+    this.hud.anchor.visible = true;
   }
 
   // Rotate the rig around the head so the player stays in place.

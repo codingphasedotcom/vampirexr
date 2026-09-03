@@ -71,9 +71,9 @@ export class Menu {
     const hy = _pos.y;
     this.heading.position.set(0, hy + 0.55, -1.8);
 
-    const n = items.length;
+    const n = items.length, gap = n > 3 ? 0.62 : 0.7;
     items.forEach((item, i) => {
-      const x = (i - (n - 1) / 2) * 0.7;
+      const x = (i - (n - 1) / 2) * gap;
       const frame = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.82),
         new THREE.MeshBasicMaterial({ color: 0xff4d6d, transparent: true, opacity: 0.25, depthTest: false }));
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.756),
