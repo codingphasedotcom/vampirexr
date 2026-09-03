@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Survivor XR</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; color: #eee; }
+    canvas { display: block; }
+    #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(4, 2, 10, .78); gap: 18px; text-align: center; z-index: 10; }
+    #overlay.hidden, #crosshair.hidden { display: none; }
+    #overlay h1 { font-size: 60px; margin: 0; letter-spacing: 6px; color: #ff4d6d; text-shadow: 0 0 28px #ff4d6d; }
+    #overlay p { max-width: 540px; line-height: 1.6; color: #bbb; margin: 0; }
+    #overlay small { color: #777; align-self: center; }
+    button { font: inherit; font-size: 20px; padding: 12px 28px; border: 2px solid #ff4d6d; background: #14101c; color: #fff; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #ff4d6d; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    #crosshair { position: fixed; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #fff; box-shadow: 0 0 6px #000; z-index: 5; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="crosshair" class="hidden"></div>
+  <div id="overlay">
+    <h1 id="ovTitle">SURVIVOR XR</h1>
+    <p id="ovMsg"></p>
+    <div class="row">
+      <button id="playDesktop">Play on Desktop</button>
+      <div id="vrButtonHolder"></div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
