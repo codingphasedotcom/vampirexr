@@ -10,6 +10,14 @@ export class Input {
     this.yaw = 0; this.pitch = 0;
     this.clickPressed = false;
     this.mouseDown = false; // left button held while pointer-locked (desktop gun)
+    // desktop gamepad (standard mapping): left stick move, right stick look, RT fire, A select, Start pause
+    this.pad = null;
+    this.padFire = false;
+    this.padSelectEdge = false;
+    this.padStartEdge = false;
+    this.padNav = 0; // -1 / +1 edge from d-pad or bumpers, for cycling menu cards
+    this.usingPad = false;
+    this._padHeld = {};
     this.onKey = null;
     this.onUnlockedClick = null;
     this.onHands = null;
@@ -73,6 +81,41 @@ export class Input {
     }
   }
 
+  // Poll the first connected standard gamepad. Call once per frame (desktop only).
+  pollGamepad(dt) {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gp = null;
+    for (const g of pads) if (g && g.connected && g.mapping === 'standard') { gp = g; break; }
+    if (!gp) for (const g of pads) if (g && g.connected) { gp = g; break; }
+    this.pad = gp;
+    if (!gp) { this.padFire = false; return; }
+    const a = gp.axes, b = gp.buttons;
+    const dz = (v) => (Math.abs(v) > 0.15 ? v : 0);
+    const lx = dz(a[0] || 0), ly = dz(a[1] || 0), rx = dz(a[2] || 0), ry = dz(a[3] || 0);
+    const pressed = (i) => !!(b[i] && (b[i].pressed || b[i].value > 0.5));
+    const edge = (name, now) => { const was = this._padHeld[name]; this._padHeld[name] = now; return now && !was; };
+    if (lx || ly || rx || ry || b.some((x) => x.pressed)) this.usingPad = true;
+    this.padMove = { x: lx, y: -ly };
+    // right stick look: yaw 150°/s, pitch 100°/s at full tilt, with a gentle curve
+    this.yaw -= rx * Math.abs(rx) * 2.6 * dt;
+    this.pitch = clamp(this.pitch - ry * Math.abs(ry) * 1.8 * dt, -1.45, 1.45);
+    this.padFire = pressed(7) || pressed(5); // RT or RB
+    if (edge('select', pressed(0))) this.padSelectEdge = true; // A / Cross
+    if (edge('start', pressed(9))) this.padStartEdge = true;
+    const nav = (pressed(15) || pressed(5) ? 1 : 0) - (pressed(14) || pressed(4) ? 1 : 0);
+    if (edge('nav', nav !== 0)) this.padNav = nav;
+    for (let i = 0; i < 4; i++) if (edge('face' + i, pressed(i))) this.padFace = i; // A B X Y edges for menus
+  }
+
+  rumble(strong = 0.6, weak = 0.3, ms = 80) {
+    const act = this.pad?.vibrationActuator;
+    if (act?.playEffect) act.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }).catch(() => {});
+  }
+
+  consumePadSelect() { const v = this.padSelectEdge; this.padSelectEdge = false; return v; }
+  consumePadStart() { const v = this.padStartEdge; this.padStartEdge = false; return v; }
+  consumePadNav() { const v = this.padNav; this.padNav = 0; return v; }
+
   requestPointerLock() {
     try { this.dom.requestPointerLock()?.catch?.(() => {}); } catch { /* ignore */ }
   }
@@ -119,6 +162,7 @@ export class Input {
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) y -= 1;
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
+    if (!x && !y && this.padMove) { x = this.padMove.x; y = this.padMove.y; }
     const l = Math.hypot(x, y);
     return l > 1 ? { x: x / l, y: y / l } : { x, y };
   }
@@ -166,5 +210,5 @@ export class Input {
   consumeClick() { const v = this.clickPressed; this.clickPressed = false; return v; }
 
   // Called after a menu pick so the same press doesn't immediately fire the gun.
-  clearSelecting() { for (const c of this.controllers) c.selecting = false; this.mouseDown = false; }
+  clearSelecting() { for (const c of this.controllers) c.selecting = false; this.mouseDown = false; this.padFire = false; this.padSelectEdge = false; }
 }

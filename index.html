@@ -8,7 +8,17 @@
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; color: #eee; }
     canvas { display: block; }
     #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; z-index: 10;
+      padding: 24px 16px; box-sizing: border-box; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y;
       background: linear-gradient(rgba(4, 2, 10, .35), rgba(4, 2, 10, .85)), url('/img/keyart.jpg') center / cover no-repeat; }
+    #overlay > * { flex-shrink: 0; }
+    @media (max-height: 640px), (max-width: 640px) {
+      #overlay { justify-content: flex-start; gap: 14px; }
+      #logo { width: min(420px, 88vw); }
+      #overlay p { font-size: 14px; }
+      button { font-size: 17px; padding: 10px 20px; }
+    }
+    .settings { flex-wrap: wrap; justify-content: center; }
+    #fullscreenBtn { font-size: 15px; padding: 6px 12px; border-color: #555; color: #bbb; }
     #logo { width: min(640px, 80vw); mix-blend-mode: screen; filter: drop-shadow(0 0 24px rgba(255, 60, 100, .5)); }
     #ovTitle.small { font-size: 34px; letter-spacing: 3px; }
     #overlay.hidden, #crosshair.hidden { display: none; }
@@ -32,6 +42,9 @@
     <div class="row">
       <button id="playDesktop">Play on Desktop</button>
       <div id="vrButtonHolder"></div>
+    </div>
+    <div class="row">
+      <button id="fullscreenBtn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
     </div>
     <div class="row settings">
       <label>Level <select id="setLevel"><option value="graveyard">Graveyard (night)</option><option value="village">Village (day)</option><option value="city">City (night)</option></select></label>

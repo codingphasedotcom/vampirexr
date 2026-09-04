@@ -363,7 +363,7 @@ export class Gun extends Weapon {
         this.fire(_o, _d, gm);
         fired = true;
       });
-    } else if (g.input.mouseDown) {
+    } else if (g.input.mouseDown || g.input.padFire) {
       // aim from the camera so the crosshair is exact; the tracer still starts at the muzzle
       g.camera.getWorldPosition(_o);
       g.camera.getWorldQuaternion(_q);
@@ -400,6 +400,7 @@ export class Gun extends Weapon {
     this.tracers.push({ x0: _m.x, y0: _m.y, z0: _m.z, x1: origin.x + dir.x * end, y1: origin.y + dir.y * end, z1: origin.z + dir.z * end, life: 1 });
     gm.kick = 1;
     g.sfx.gunshot();
+    g.input.rumble(0.5, 0.2, 60);
   }
 
   draw(dt) {

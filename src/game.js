@@ -38,7 +38,7 @@ const _kindColor = new THREE.Color();
 const PLAYER_RADIUS = 0.35;
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
-<b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
+<b>Desktop:</b> WASD + mouse, or a gamepad (sticks to move/look, RT to shoot, A to pick, Start to pause). F toggles fullscreen.<br>
 <b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
 Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
@@ -125,9 +125,11 @@ export class Game {
 
   bindUi() {
     this.playBtn.onclick = () => {
-      if (this.state === 'paused') this.input.requestPointerLock();
-      else this.start();
+      if (this.state === 'paused') { if (this.input.usingPad) this.resume(); else this.input.requestPointerLock(); }
+      else { this.enterFullscreen(); this.start(); }
     };
+    const fsBtn = document.getElementById('fullscreenBtn');
+    if (fsBtn) fsBtn.onclick = () => this.toggleFullscreen();
     this.input.onKey = (code) => this.onKey(code);
     this.input.onHands = () => this.hud.toast('Hands: swing arms to run · pinch to pick', 5);
     this.input.onUnlockedClick = () => {
@@ -135,7 +137,7 @@ export class Game {
     };
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === this.renderer.domElement;
-      if (!locked && this.state === 'playing' && !this.renderer.xr.isPresenting) {
+      if (!locked && this.state === 'playing' && !this.renderer.xr.isPresenting && !this.input.usingPad) {
         this.state = 'paused';
         this.showOverlay('PAUSED', 'Click Resume to get back into the fight.', 'Resume');
       } else if (locked && this.state === 'paused') {
@@ -214,8 +216,19 @@ export class Game {
 
   resume() {
     this.menu.hide();
+    this.overlay.classList.add('hidden');
     this.clock.getDelta();
     this.state = 'playing';
+  }
+
+  enterFullscreen() {
+    const el = document.documentElement;
+    if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen().catch(() => {});
+  }
+
+  toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else this.enterFullscreen();
   }
 
   showOverlay(title, msg, btn) {
@@ -257,6 +270,7 @@ export class Game {
   }
 
   onKey(code) {
+    if (code === 'KeyF' && !this.renderer.xr.isPresenting) { this.toggleFullscreen(); return; }
     if (!this.menu.open) return;
     const m = /^(?:Digit|Numpad)([1-9])$/.exec(code);
     if (m) this.menu.pick(Number(m[1]) - 1);
@@ -328,6 +342,7 @@ export class Game {
     this.player.hurt(amount);
     this.hud.hurt();
     this.sfx.hurt();
+    this.input.rumble(0.8, 0.5, 150);
     if (effect === 'slow') { this.slowUntil = this.time + 2; this.hud.toast('Frozen!', 1.2); }
   }
 
@@ -369,6 +384,16 @@ export class Game {
     if (xr && this.input.getMenuPress()) {
       if (this.state === 'playing') { this.state = 'paused'; this.showPauseMenu(); }
       else if (this.state === 'paused') this.resume();
+    }
+    if (!xr) {
+      this.input.pollGamepad(dt);
+      if (this.input.consumePadStart()) {
+        if (this.state === 'playing') { this.state = 'paused'; this.showOverlay('PAUSED', 'Press Start or click Resume.', 'Resume'); if (document.pointerLockElement) document.exitPointerLock(); }
+        else if (this.state === 'paused') this.resume();
+        else if (this.state === 'menu' && !this.menu.open) { this.enterFullscreen(); this.start(); }
+      }
+      if (this.state === 'gameover' && this.input.padFace === 0) { this.input.padFace = -1; this.menu.pick(0); }
+      else this.input.padFace = -1;
     }
     this.updateMovement(dt, xr);
     if (this.state === 'playing') this.tick(dt);
@@ -485,7 +510,7 @@ export class Game {
     this.hurtTimer -= dt;
     if (contact > 0) {
       p.hurt(contact);
-      if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); }
+      if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); this.input.rumble(0.6, 0.4, 120); }
     }
     if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
     if (this.state !== 'playing') return; // victory may have ended the run this frame

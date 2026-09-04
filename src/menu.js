@@ -112,6 +112,7 @@ export class Menu {
 
     this.group.visible = true;
     this.open = true;
+    this.padIndex = -1;
     this.input.setLasers(true);
     this.crosshair?.classList.toggle('hidden', xr);
     this.input.consumeSelect(); this.input.consumeClick(); // drop stale presses
@@ -142,7 +143,11 @@ export class Menu {
     } else {
       this.raycaster.setFromCamera(_center, this.camera);
       const hit = this.raycaster.intersectObjects(meshes, false)[0];
-      if (hit) hovered = meshes.indexOf(hit.object);
+      if (hit) { hovered = meshes.indexOf(hit.object); this.padIndex = -1; }
+      // gamepad: d-pad / bumpers cycle cards when the gaze isn't on one
+      const nav = this.input.consumePadNav();
+      if (nav) this.padIndex = ((this.padIndex < 0 ? (hovered >= 0 ? hovered : -1) : this.padIndex) + nav + meshes.length) % meshes.length;
+      if (hovered < 0 && this.padIndex >= 0) hovered = this.padIndex;
     }
     this.cards.forEach((c, i) => {
       const h = i === hovered;
@@ -150,8 +155,8 @@ export class Menu {
       c.mesh.scale.setScalar(h ? 1.08 : 1);
       c.frame.scale.setScalar(h ? 1.08 : 1);
     });
-    const sel = this.input.consumeSelect(), click = this.input.consumeClick();
-    if ((sel || click) && hovered >= 0) this.pick(hovered);
+    const sel = this.input.consumeSelect(), click = this.input.consumeClick(), pad = this.input.consumePadSelect();
+    if ((sel || click || pad) && hovered >= 0) this.pick(hovered);
   }
 
   pick(i) {
