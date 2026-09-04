@@ -353,6 +353,9 @@ export class Game {
     this.numbers.update(dt);
     this.world.update(dt, fxTime.value, this.player.pos);
     this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
+    const inMenu = this.state === 'menu';
+    this.hud.mesh.visible = !inMenu;
+    this.minimap.mesh.visible = !inMenu;
     this.hud.update(dt, this.player, this.time, this.boss, this.waveInfo());
     this.minimap.update(dt, this);
     this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');

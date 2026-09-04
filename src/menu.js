@@ -48,10 +48,21 @@ export class Menu {
     this.group.add(this.heading);
     // main-menu dressing: the logo replaces the text heading, key art hangs behind the cards
     const tl = new THREE.TextureLoader();
-    this.logoTex = tl.load('/img/logo.png'); this.logoTex.colorSpace = THREE.SRGBColorSpace;
     const artTex = tl.load('/img/keyart.jpg'); artTex.colorSpace = THREE.SRGBColorSpace;
+    // the logo ships on solid black; turn brightness into alpha so it composites cleanly over the art
     this.logo = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.2 * 1100 / 2752),
-      new THREE.MeshBasicMaterial({ map: this.logoTex, transparent: true, blending: THREE.AdditiveBlending, depthTest: false }));
+      new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, opacity: 0 }));
+    const img = new Image();
+    img.onload = () => {
+      const c = makeCanvas(img.width, img.height), g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height), px = d.data;
+      for (let i = 0; i < px.length; i += 4) px[i + 3] = Math.min(255, Math.max(px[i], px[i + 1], px[i + 2]) * 1.6);
+      g.putImageData(d, 0, 0);
+      const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+      this.logo.material.map = t; this.logo.material.opacity = 1; this.logo.material.needsUpdate = true;
+    };
+    img.src = '/img/logo.png';
     this.logo.renderOrder = 902; this.logo.visible = false;
     this.art = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 4.8 * 1536 / 2752),
       new THREE.MeshBasicMaterial({ map: artTex, transparent: true, opacity: 0.95, depthTest: false }));
@@ -82,9 +93,9 @@ export class Menu {
     const hy = _pos.y;
     this.heading.position.set(0, hy + 0.55, -1.8);
     this.logo.visible = logo; this.heading.visible = !logo;
-    this.logo.position.set(0, hy + 0.75, -1.85);
+    this.logo.position.set(0, hy + 0.85, -1.85);
     this.art.visible = art;
-    this.art.position.set(0, hy + 0.3, -3.2);
+    this.art.position.set(0, hy + 0.1, -3.2);
 
     const n = items.length, gap = n > 3 ? 0.62 : 0.7;
     items.forEach((item, i) => {
