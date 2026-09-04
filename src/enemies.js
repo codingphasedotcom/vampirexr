@@ -5,14 +5,17 @@ import { loadVATModel, vatMaterial, loadStaticModel } from './models.js';
 // `y` is the model's visual centre (used for particles / damage numbers); models stand on y = 0.
 export const ENEMY_TYPES = {
   bat:    { hp: 6,   speed: 3.2, dmg: 3,  size: 0.45, y: 1.35, color: 0x9b5de5, xp: 1, fly: true,
-            build: batGeometry, anim: ['FLAP'] },
+            build: batGeometry, anim: ['FLAP'],
+            model: { url: '/models/bat.glb', height: 0.5, lift: 1.1, yaw: 0, animated: false } },
   ghoul:  { hp: 22,  speed: 2.1, dmg: 6,  size: 0.8,  y: 1.0,  color: 0x7fd36a, xp: 2,
             build: ghoulGeometry, anim: ['SHAMBLE', { speed: 7, hip: 0.55 }],
             model: { url: '/models/ghoul.glb', height: 1.7, yaw: 0, rate: 1.0 } },
   wraith: { hp: 40,  speed: 2.8, dmg: 9,  size: 0.9,  y: 1.3,  color: 0x7ff3ff, xp: 4, fly: true,
-            build: wraithGeometry, anim: ['WAVE'] },
+            build: wraithGeometry, anim: ['WAVE'],
+            model: { url: '/models/wraith.glb', height: 1.9, lift: 0.25, yaw: 0, animated: false } },
   brute:  { hp: 130, speed: 1.4, dmg: 16, size: 1.5,  y: 1.4,  color: 0xff4d5a, xp: 8,
-            build: bruteGeometry, anim: ['SHAMBLE', { speed: 4.5, hip: 0.6 }] },
+            build: bruteGeometry, anim: ['SHAMBLE', { speed: 4.5, hip: 0.6 }],
+            model: { url: '/models/brute.glb', height: 2.4, yaw: 0, rate: 0.9 } },
 };
 const MAX = { bat: 320, ghoul: 220, wraith: 120, brute: 60 };
 const CELL = 2;

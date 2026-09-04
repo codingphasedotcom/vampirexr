@@ -201,12 +201,18 @@ const AI = {
 
 // One boss per five levels. `y` is the visual centre; `size` drives contact range and hitscan radius.
 export const BOSSES = [
-  { level: 5,  name: 'Bat Lord',     hp: 900,   speed: 6,   dmg: 12, size: 2.2, y: 3.6, color: 0xb36bff, xp: 40,  fly: true, build: batLordGeometry, anim: ['FLAP'], ai: AI.batLord },
-  { level: 10, name: 'Grave Golem',  hp: 2200,  speed: 1.2, dmg: 20, size: 3.2, y: 2.2, color: 0x9dff70, xp: 60,  build: golemGeometry, anim: ['SHAMBLE', { speed: 3, hip: 1.3 }], ai: AI.golem },
-  { level: 15, name: 'Necromancer',  hp: 3200,  speed: 2.0, dmg: 10, size: 1.8, y: 1.8, color: 0x7dff9a, xp: 80,  build: necroGeometry, anim: ['WAVE'], ai: AI.necro },
-  { level: 20, name: 'Wraith Queen', hp: 5000,  speed: 3.5, dmg: 16, size: 2.0, y: 2.6, color: 0x9ff8ff, xp: 100, fly: true, build: queenGeometry, anim: ['WAVE'], ai: AI.queen },
-  { level: 25, name: 'The Butcher',  hp: 8000,  speed: 1.8, dmg: 30, size: 3.0, y: 2.6, color: 0xff3b3b, xp: 130, build: butcherGeometry, anim: ['SHAMBLE', { speed: 4, hip: 1.2 }], ai: AI.butcher },
-  { level: 30, name: 'Vampire Lord', hp: 14000, speed: 2.6, dmg: 24, size: 2.2, y: 2.6, color: 0xff2a6d, xp: 200, build: vampireGeometry, anim: ['WAVE'], ai: AI.vampire, final: true },
+  { level: 5,  name: 'Bat Lord',     hp: 900,   speed: 6,   dmg: 12, size: 2.2, y: 3.6, color: 0xb36bff, xp: 40,  fly: true, build: batLordGeometry, anim: ['FLAP'], ai: AI.batLord,
+    model: { url: '/models/batlord.glb', height: 2.8, lift: 1.6, yaw: 0, animated: false } },
+  { level: 10, name: 'Grave Golem',  hp: 2200,  speed: 1.2, dmg: 20, size: 3.2, y: 2.2, color: 0x9dff70, xp: 60,  build: golemGeometry, anim: ['SHAMBLE', { speed: 3, hip: 1.3 }], ai: AI.golem,
+    model: { url: '/models/golem.glb', height: 4.5, yaw: 0, rate: 0.7 } },
+  { level: 15, name: 'Necromancer',  hp: 3200,  speed: 2.0, dmg: 10, size: 1.8, y: 1.8, color: 0x7dff9a, xp: 80,  build: necroGeometry, anim: ['WAVE'], ai: AI.necro,
+    model: { url: '/models/necro.glb', height: 3.2, yaw: 0, rate: 0.8 } },
+  { level: 20, name: 'Wraith Queen', hp: 5000,  speed: 3.5, dmg: 16, size: 2.0, y: 2.6, color: 0x9ff8ff, xp: 100, fly: true, build: queenGeometry, anim: ['WAVE'], ai: AI.queen,
+    model: { url: '/models/queen.glb', height: 3.6, lift: 0.4, yaw: 0, animated: false } },
+  { level: 25, name: 'The Butcher',  hp: 8000,  speed: 1.8, dmg: 30, size: 3.0, y: 2.6, color: 0xff3b3b, xp: 130, build: butcherGeometry, anim: ['SHAMBLE', { speed: 4, hip: 1.2 }], ai: AI.butcher,
+    model: { url: '/models/butcher.glb', height: 4.5, yaw: 0, rate: 0.8 } },
+  { level: 30, name: 'Vampire Lord', hp: 14000, speed: 2.6, dmg: 24, size: 2.2, y: 2.6, color: 0xff2a6d, xp: 200, build: vampireGeometry, anim: ['WAVE'], ai: AI.vampire, final: true,
+    model: { url: '/models/vampire.glb', height: 3.5, yaw: 0, rate: 1.0 } },
 ];
 
 // ---------- boss-owned effects: projectiles that hurt the player, and shockwave rings ----------

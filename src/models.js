@@ -38,7 +38,7 @@ function normalizeRoot(root, height, yaw) {
   return fix;
 }
 
-function bakeVAT(skinned, root, clip, frames) {
+function bakeVAT(skinned, root, clip, frames, lift = 0) {
   const geo = skinned.geometry;
   const pos = geo.attributes.position, nor = geo.attributes.normal;
   const si = geo.attributes.skinIndex, sw = geo.attributes.skinWeight;
@@ -72,7 +72,7 @@ function bakeVAT(skinned, root, clip, frames) {
       _v.fromBufferAttribute(pos, i).applyMatrix4(_m).applyMatrix4(toModel);
       _n.fromBufferAttribute(nor, i).transformDirection(_m).applyMatrix3(toModelN).normalize();
       const o = (f * V + i) * 4, on = ((frames + f) * V + i) * 4;
-      data[o] = _v.x; data[o + 1] = _v.y; data[o + 2] = _v.z; data[o + 3] = 1;
+      data[o] = _v.x; data[o + 1] = _v.y + lift; data[o + 2] = _v.z; data[o + 3] = 1;
       data[on] = _n.x; data[on + 1] = _n.y; data[on + 2] = _n.z; data[on + 3] = 0;
     }
   }
@@ -83,14 +83,14 @@ function bakeVAT(skinned, root, clip, frames) {
 }
 
 // Returns { geometry, texture, frames, duration, map } ready for an instanced VAT material.
-export async function loadVATModel(url, { height = 1.7, yaw = 0, frames = 24 } = {}) {
+export async function loadVATModel(url, { height = 1.7, yaw = 0, lift = 0, frames = 24 } = {}) {
   const gltf = await loadGLB(url);
   const root = normalizeRoot(gltf.scene, height, yaw);
   let skinned = null;
   root.traverse((o) => { if (o.isSkinnedMesh && !skinned) skinned = o; });
   if (!skinned || !gltf.animations.length) throw new Error(`${url}: no skinned mesh / animation`);
   const clip = gltf.animations[0];
-  const texture = bakeVAT(skinned, root, clip, frames);
+  const texture = bakeVAT(skinned, root, clip, frames, lift);
   // fresh static geometry: positions come from the texture, we only keep uv/index for the draw
   const geometry = new THREE.BufferGeometry();
   const src = skinned.geometry;
@@ -98,14 +98,23 @@ export async function loadVATModel(url, { height = 1.7, yaw = 0, frames = 24 } =
   geometry.setAttribute('position', src.attributes.position); // placeholder, overwritten in the shader
   geometry.setAttribute('normal', src.attributes.normal);
   if (src.attributes.uv) geometry.setAttribute('uv', src.attributes.uv);
-  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, height / 2, 0), height);
+  geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, lift + height / 2, 0), height);
   const map = skinned.material.map || null;
   if (map) map.colorSpace = THREE.SRGBColorSpace;
   return { geometry, texture, frames, duration: clip.duration, map, verts: src.attributes.position.count };
 }
 
 // Static (unanimated) GLB → single merged geometry in normalized model space, plus its base-color map.
-export async function loadStaticModel(url, { height = 1.7, yaw = 0 } = {}) {
+// Meshopt-compressed GLBs store quantized (Int16/Int8 normalized) attributes; transforming those in place
+// corrupts them, so copy to Float32 first.
+function toFloat(attr) {
+  const n = attr.count, size = attr.itemSize, out = new Float32Array(n * size);
+  for (let i = 0; i < n; i++) for (let k = 0; k < size; k++) out[i * size + k] = attr.getComponent(i, k);
+  return new THREE.BufferAttribute(out, size);
+}
+
+// `lift` raises the model off the floor (flying creatures hover at head height).
+export async function loadStaticModel(url, { height = 1.7, yaw = 0, lift = 0 } = {}) {
   const gltf = await loadGLB(url);
   const root = normalizeRoot(gltf.scene, height, yaw);
   const parts = [];
@@ -114,15 +123,16 @@ export async function loadStaticModel(url, { height = 1.7, yaw = 0 } = {}) {
     if (!o.isMesh) return;
     const g = new THREE.BufferGeometry();
     g.setIndex(o.geometry.index);
-    g.setAttribute('position', o.geometry.attributes.position.clone());
-    g.setAttribute('normal', o.geometry.attributes.normal.clone());
-    if (o.geometry.attributes.uv) g.setAttribute('uv', o.geometry.attributes.uv.clone());
+    g.setAttribute('position', toFloat(o.geometry.attributes.position));
+    g.setAttribute('normal', toFloat(o.geometry.attributes.normal));
+    if (o.geometry.attributes.uv) g.setAttribute('uv', toFloat(o.geometry.attributes.uv));
     g.applyMatrix4(o.matrixWorld);
     parts.push(g);
     map = map || o.material.map;
   });
   if (!parts.length) throw new Error(`${url}: no meshes`);
   const geometry = parts.length === 1 ? parts[0] : mergeGeometries(parts);
+  if (lift) geometry.translate(0, lift, 0);
   geometry.computeBoundingSphere();
   if (map) map.colorSpace = THREE.SRGBColorSpace;
   return { geometry, map };
