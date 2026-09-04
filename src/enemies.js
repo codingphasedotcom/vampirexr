@@ -1,12 +1,14 @@
 import * as THREE from 'three';
 import { batGeometry, ghoulGeometry, wraithGeometry, bruteGeometry, creatureMaterial, enemyTime } from './creatures.js';
+import { loadVATModel, vatMaterial, loadStaticModel, staticMaterial } from './models.js';
 
 // `y` is the model's visual centre (used for particles / damage numbers); models stand on y = 0.
 export const ENEMY_TYPES = {
   bat:    { hp: 6,   speed: 3.2, dmg: 3,  size: 0.45, y: 1.35, color: 0x9b5de5, xp: 1, fly: true,
             build: batGeometry, anim: ['FLAP'] },
   ghoul:  { hp: 22,  speed: 2.1, dmg: 6,  size: 0.8,  y: 1.0,  color: 0x7fd36a, xp: 2,
-            build: ghoulGeometry, anim: ['SHAMBLE', { speed: 7, hip: 0.55 }] },
+            build: ghoulGeometry, anim: ['SHAMBLE', { speed: 7, hip: 0.55 }],
+            model: { url: '/models/ghoul.glb', height: 1.7, yaw: 0, rate: 1.0 } },
   wraith: { hp: 40,  speed: 2.8, dmg: 9,  size: 0.9,  y: 1.3,  color: 0x7ff3ff, xp: 4, fly: true,
             build: wraithGeometry, anim: ['WAVE'] },
   brute:  { hp: 130, speed: 1.4, dmg: 16, size: 1.5,  y: 1.4,  color: 0xff4d5a, xp: 8,
@@ -45,6 +47,36 @@ export class EnemyManager {
   }
 
   get alive() { return this.list.length; }
+
+  // Swap procedural horde meshes for baked-animation GLB models where one is configured.
+  // Runs in the background; a type keeps its procedural look if its model fails to load.
+  async loadModels() {
+    for (const [name, t] of Object.entries(ENEMY_TYPES)) {
+      if (!t.model) continue;
+      try {
+        let geometry, material;
+        if (t.model.animated === false) {
+          const m = await loadStaticModel(t.model.url, t.model);
+          geometry = m.geometry; material = staticMaterial(m, enemyTime);
+        } else {
+          const vat = await loadVATModel(t.model.url, t.model);
+          geometry = vat.geometry; material = vatMaterial(vat, enemyTime, { rate: t.model.rate });
+        }
+        geometry.setAttribute('aPhase', this.phases[name]);
+        const mesh = new THREE.InstancedMesh(geometry, material, MAX[name]);
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        mesh.frustumCulled = false;
+        mesh.setColorAt(0, _c.setScalar(1));
+        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+        mesh.count = 0;
+        this.scene.remove(this.meshes[name]);
+        this.scene.add(mesh);
+        this.meshes[name] = mesh;
+      } catch (err) {
+        console.warn(`Model for ${name} not loaded, keeping procedural:`, err.message || err);
+      }
+    }
+  }
 
   // Bosses get their own Mesh (not instanced) and drive their own movement via t.ai.
   spawnBoss(def, x, z, hpMul = 1) {
