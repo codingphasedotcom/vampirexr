@@ -46,6 +46,17 @@ export class Menu {
     this.heading = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 0.39), new THREE.MeshBasicMaterial({ transparent: true, depthTest: false }));
     this.heading.renderOrder = 901;
     this.group.add(this.heading);
+    // main-menu dressing: the logo replaces the text heading, key art hangs behind the cards
+    const tl = new THREE.TextureLoader();
+    this.logoTex = tl.load('/img/logo.png'); this.logoTex.colorSpace = THREE.SRGBColorSpace;
+    const artTex = tl.load('/img/keyart.jpg'); artTex.colorSpace = THREE.SRGBColorSpace;
+    this.logo = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 2.2 * 1100 / 2752),
+      new THREE.MeshBasicMaterial({ map: this.logoTex, transparent: true, blending: THREE.AdditiveBlending, depthTest: false }));
+    this.logo.renderOrder = 902; this.logo.visible = false;
+    this.art = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 4.8 * 1536 / 2752),
+      new THREE.MeshBasicMaterial({ map: artTex, transparent: true, opacity: 0.95, depthTest: false }));
+    this.art.renderOrder = 899; this.art.visible = false;
+    this.group.add(this.logo, this.art);
     this.cards = [];
     this.items = [];
     this.raycaster = new THREE.Raycaster();
@@ -53,7 +64,7 @@ export class Menu {
     this.crosshair = document.getElementById('crosshair');
   }
 
-  show(title, sub, items, onPick, xr) {
+  show(title, sub, items, onPick, xr, { logo = false, art = false } = {}) {
     for (const c of this.cards) {
       this.group.remove(c.mesh, c.frame);
       c.mesh.material.map.dispose(); c.mesh.material.dispose(); c.frame.material.dispose();
@@ -70,6 +81,10 @@ export class Menu {
     this.group.rotation.set(0, Math.atan2(-_fwd.x, -_fwd.z), 0);
     const hy = _pos.y;
     this.heading.position.set(0, hy + 0.55, -1.8);
+    this.logo.visible = logo; this.heading.visible = !logo;
+    this.logo.position.set(0, hy + 0.75, -1.85);
+    this.art.visible = art;
+    this.art.position.set(0, hy + 0.3, -3.2);
 
     const n = items.length, gap = n > 3 ? 0.62 : 0.7;
     items.forEach((item, i) => {

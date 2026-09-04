@@ -3,11 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Survivor XR</title>
+  <title>VampiresXR</title>
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; color: #eee; }
     canvas { display: block; }
-    #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(4, 2, 10, .78); gap: 18px; text-align: center; z-index: 10; }
+    #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; z-index: 10;
+      background: linear-gradient(rgba(4, 2, 10, .35), rgba(4, 2, 10, .85)), url('/img/keyart.jpg') center / cover no-repeat; }
+    #logo { width: min(640px, 80vw); mix-blend-mode: screen; filter: drop-shadow(0 0 24px rgba(255, 60, 100, .5)); }
+    #ovTitle.small { font-size: 34px; letter-spacing: 3px; }
     #overlay.hidden, #crosshair.hidden { display: none; }
     #overlay h1 { font-size: 60px; margin: 0; letter-spacing: 6px; color: #ff4d6d; text-shadow: 0 0 28px #ff4d6d; }
     #overlay p { max-width: 540px; line-height: 1.6; color: #bbb; margin: 0; }
@@ -23,7 +26,8 @@
 <body>
   <div id="crosshair" class="hidden"></div>
   <div id="overlay">
-    <h1 id="ovTitle">SURVIVOR XR</h1>
+    <img id="logo" src="/img/logo.png" alt="VampiresXR">
+    <h1 id="ovTitle" class="small" hidden></h1>
     <p id="ovMsg"></p>
     <div class="row">
       <button id="playDesktop">Play on Desktop</button>

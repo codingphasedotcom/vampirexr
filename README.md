@@ -1,4 +1,4 @@
-# Survivor XR
+# VampiresXR
 
 A Vampire Survivors–style horde game built with Three.js and WebXR. Plays in a VR headset or on desktop.
 

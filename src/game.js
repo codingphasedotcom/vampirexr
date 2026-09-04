@@ -112,7 +112,7 @@ export class Game {
       this.composer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    this.showOverlay('SURVIVOR XR', INTRO, 'Play on Desktop');
+    this.showOverlay('VAMPIRESXR', INTRO, 'Play on Desktop');
     this.renderer.setAnimationLoop(() => this.loop());
   }
 
@@ -157,10 +157,10 @@ export class Game {
 
   showVrMenu() {
     this.state = 'menu';
-    this.menu.show('SURVIVOR XR', 'Point at a card and pull the trigger (or pinch)', [
+    this.menu.show('', 'Point at a card and pull the trigger (or pinch)', [
       { kind: 'weapon', title: 'Start', sub: 'Play', desc: 'Survive the night. Weapons fire on their own; you aim the revolver.', apply: () => this.start() },
       { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
-    ], (item) => item.apply(), true);
+    ], (item) => item.apply(), true, { logo: true, art: true });
   }
 
   showPauseMenu() {
@@ -193,6 +193,10 @@ export class Game {
   }
 
   showOverlay(title, msg, btn) {
+    // the logo image stands in for the title on the main menu; other screens (paused) show text
+    const isMain = title === 'VAMPIRESXR';
+    document.getElementById('logo').hidden = !isMain;
+    this.ovTitle.hidden = isMain;
     this.ovTitle.textContent = title;
     this.ovMsg.innerHTML = msg;
     this.playBtn.textContent = btn;
@@ -222,7 +226,7 @@ export class Game {
       this.state = 'menu';
       this.menu.hide();
       this.hud.setMode('camera');
-      this.showOverlay('SURVIVOR XR', INTRO, 'Play on Desktop');
+      this.showOverlay('VAMPIRESXR', INTRO, 'Play on Desktop');
     });
   }
 
