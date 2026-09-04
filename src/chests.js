@@ -51,7 +51,7 @@ export class Chests {
       c.g.position.y = Math.sin(time * 2 + c.phase) * 0.05;
       c.g.rotation.y += 0.004;
       glow.add(c.x, 0.5, c.z, 1.2, GOLD, 0.6);
-      for (let k = 0; k < 14; k++) glow.add(c.x, 0.8 + k * 0.6, c.z, 0.9, GOLD, 0.45 * (1 - k / 14));
+      for (let k = 0; k < 26; k++) glow.add(c.x, 0.7 + k * 0.32, c.z, 1.1, GOLD, 0.32 * (1 - k / 26));
     }
   }
 
