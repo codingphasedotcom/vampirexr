@@ -242,9 +242,9 @@ export class BossFx {
     }
   }
 
-  shoot(x, z, vx, vz, dmg, color) {
+  shoot(x, z, vx, vz, dmg, color, effect = null) {
     if (this.shots.length >= MAX_SHOTS) return;
-    this.shots.push({ x, z, vx, vz, dmg, life: 6, color: new THREE.Color(color) });
+    this.shots.push({ x, z, vx, vz, dmg, effect, life: 6, color: new THREE.Color(color) });
   }
 
   shockwave(x, z, max, dmg) {
@@ -258,7 +258,7 @@ export class BossFx {
     let w = 0;
     for (const s of this.shots) {
       s.x += s.vx * dt; s.z += s.vz * dt; s.life -= dt;
-      if (Math.hypot(s.x - p.x, s.z - p.z) < 0.55) { g.damagePlayer(s.dmg); g.particles.burst(s.x, 1.2, s.z, s.color, 10, 3); continue; }
+      if (Math.hypot(s.x - p.x, s.z - p.z) < 0.55) { g.damagePlayer(s.dmg, s.effect); g.particles.burst(s.x, 1.2, s.z, s.color, 10, 3); continue; }
       if (s.life > 0) this.shots[w++] = s;
     }
     this.shots.length = w;

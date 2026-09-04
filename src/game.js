@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { Input } from './input.js';
 import { Player } from './player.js';
-import { EnemyManager } from './enemies.js';
+import { EnemyManager, KINDS } from './enemies.js';
 import { Gems } from './gems.js';
 import { Particles } from './particles.js';
 import { Hud } from './hud.js';
@@ -27,11 +27,14 @@ const ARENA_RADIUS = 90;
 const MAX_ENEMIES = 200; // hard cap on monsters alive at once
 const WAVES = 25;
 const BOSS_WAVES = { 4: 'Bat Lord', 8: 'Grave Golem', 12: 'Necromancer', 17: 'Wraith Queen', 25: 'Vampire Lord' };
-const waveCount = (w) => Math.floor(30 * Math.pow(1.16, w - 1)); // 30, 35, 40 … ~115 at wave 10, ~1050 at wave 25 (200 alive cap)
-const waveHpMul = (w) => 1 + (w - 1) * 0.12 + (w - 1) * (w - 1) * 0.006;
+const waveCount = (w) => Math.min(1500, Math.floor(30 * Math.pow(1.28, w - 1))); // 30 → 86 (w5) → 273 (w10); late waves stream at the alive cap
+const waveHpMul = (w) => 1 + (w - 1) * 0.2 + (w - 1) * (w - 1) * 0.01; // ~2× by wave 5, ~3.6× by wave 10
+const casterChance = (w) => Math.min(0.35, Math.max(0, (w - 2) * 0.03)); // fire/ice casters from wave 3
+const waveTimeLimit = (w) => 50 + w * 5; // seconds before the next wave starts regardless
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 const _col = { x: 0, z: 0 };
+const _kindColor = new THREE.Color();
 const PLAYER_RADIUS = 0.35;
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
@@ -277,7 +280,7 @@ export class Game {
     this.boss = null; this.hpMul = 1;
     this.time = 0; this.spawnAcc = 0;
     this.wave = 0; this.waveBreak = 1.5; // first wave starts after a short breather
-    this.pendingLevels = 0; this.hurtTimer = 0;
+    this.pendingLevels = 0; this.hurtTimer = 0; this.slowUntil = 0;
     this.hud.toastTimer = 0;
     this.rig.position.set(0, 0, 0);
     if (!this.renderer.xr.isPresenting) {
@@ -321,10 +324,11 @@ export class Game {
       () => this.start(), this.renderer.xr.isPresenting);
   }
 
-  damagePlayer(amount) {
+  damagePlayer(amount, effect = null) {
     this.player.hurt(amount);
     this.hud.hurt();
     this.sfx.hurt();
+    if (effect === 'slow') { this.slowUntil = this.time + 2; this.hud.toast('Frozen!', 1.2); }
   }
 
   spawnBoss(def) {
@@ -342,7 +346,7 @@ export class Game {
     this.numbers.spawn(e.x, e.t.y + 0.4, e.z, Math.round(dmg), died ? '#ffd166' : '#ffffff');
     if (died) {
       this.player.kills++;
-      this.gems.spawn(e.x, e.z, e.t.xp);
+      this.gems.spawn(e.x, e.z, e.xp ?? e.t.xp);
       this.particles.burst(e.x, e.t.y, e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
       this.sfx.kill();
       if (e.t.boss) {
@@ -373,6 +377,7 @@ export class Game {
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
+    for (const e of this.enemies.list) if (e.kind !== 'normal') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.9 * e.scale, _kindColor.set(KINDS[e.kind].color), 0.7);
     this.particles.update(dt);
     this.numbers.update(dt);
     this.world.update(dt, fxTime.value, this.player.pos);
@@ -414,7 +419,8 @@ export class Game {
         _right.crossVectors(_fwd, UP);
         _move.copy(_fwd).multiplyScalar(mv.y).addScaledVector(_right, mv.x);
         if (_move.lengthSq() > 1) _move.normalize();
-        this.rig.position.addScaledVector(_move, this.player.speed * dt);
+        const slow = this.slowUntil > this.time ? 0.55 : 1;
+        this.rig.position.addScaledVector(_move, this.player.speed * slow * dt);
         const h = this.headPos(), d = Math.hypot(h.x, h.z);
         if (d > ARENA_RADIUS) {
           const k = ARENA_RADIUS / d;
@@ -459,7 +465,11 @@ export class Game {
     this.time += dt;
     this.spawnDirector(dt);
     if (this.boss) this.boss.t.ai(this.boss, dt, this);
-    const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders);
+    const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders, (e, k) => {
+      const dx = p.pos.x - e.x, dz = p.pos.z - e.z, d = Math.hypot(dx, dz) || 1;
+      this.bossFx.shoot(e.x, e.z, dx / d * k.speed, dz / d * k.speed, k.dmg * this.hpMul * 0.5, k.color, k.effect);
+      this.particles.burst(e.x, e.t.y, e.z, k.color, 6, 2);
+    });
     for (const w of this.weapons) w.update(dt);
     this.bossFx.update(dt, this);
     this.gems.update(dt, p, (v) => {
@@ -501,7 +511,7 @@ export class Game {
     this.waveSpawned = 0;
     this.waveTimer = 0;
     this.spawnAcc = 0;
-    this.waveRate = Math.max(1.5, this.waveTotal / 25); // spread the wave over ~25 s
+    this.waveRate = Math.max(2, this.waveTotal / 18); // spread the wave over ~18 s
     this.hpMul = waveHpMul(w);
     const bossName = BOSS_WAVES[w];
     if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
@@ -528,29 +538,29 @@ export class Game {
       this.spawnAcc += this.waveRate * dt;
       while (this.spawnAcc >= 1 && this.waveSpawned < this.waveTotal && this.enemies.alive < MAX_ENEMIES) {
         this.spawnAcc -= 1;
-        this.spawnAt(this.pickType(this.wave), rand(0, Math.PI * 2), rand(22, 30), this.hpMul);
+        this.spawnAt(this.pickType(this.wave), rand(0, Math.PI * 2), rand(18, 26), this.hpMul, casterChance(this.wave));
         this.waveSpawned++;
       }
       if (this.enemies.alive >= MAX_ENEMIES) this.spawnAcc = Math.min(this.spawnAcc, 1);
     }
     // wave is over once everything has spawned and died (a couple of stragglers, or 2 minutes, won't hold it up)
-    const cleared = this.waveSpawned >= this.waveTotal && !this.boss && (this.enemies.alive <= 2 || this.waveTimer > 120);
+    const cleared = !this.boss && ((this.waveSpawned >= this.waveTotal && this.enemies.alive <= 2) || this.waveTimer > waveTimeLimit(this.wave));
     if (cleared && this.wave < WAVES) {
       this.waveBreak = 3;
       this.hud.toast(`Wave ${this.wave} cleared!`, 2.5);
     }
   }
 
-  spawnAt(type, angle, dist, hpMul) {
-    this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul);
+  spawnAt(type, angle, dist, hpMul, casters = 0) {
+    this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul, casters);
   }
 
   pickType(w) {
     const wt = {
-      bat: Math.max(3, 10 - Math.max(0, w - 10) * 0.5),
-      ghoul: w >= 2 ? 4 + w * 0.5 : 0,
-      wraith: w >= 6 ? 2 + (w - 6) * 0.6 : 0,
-      brute: w >= 10 ? 1 + (w - 10) * 0.4 : 0,
+      bat: Math.max(3, 10 - Math.max(0, w - 6) * 0.6),
+      ghoul: 3 + w * 0.8,
+      wraith: w >= 3 ? 2 + (w - 3) * 0.8 : 0,
+      brute: w >= 5 ? 1 + (w - 5) * 0.6 : 0,
     };
     let total = 0;
     for (const k in wt) total += wt[k];

@@ -63,7 +63,7 @@ export class Wand extends Weapon {
       if (s.life > 0) {
         g.enemies.forEachNear(s.x, s.z, 1.2, (e) => {
           if (s.pierce <= 0 || s.hit.has(e)) return;
-          if (Math.hypot(e.x - s.x, e.z - s.z) < 0.15 + e.t.size * 0.5) {
+          if (Math.hypot(e.x - s.x, e.z - s.z) < 0.15 + e.size * 0.5) {
             s.hit.add(e); s.pierce--;
             g.hitEnemy(e, dmg);
             g.particles.burst(s.x, 1.3, s.z, 0x66d4ff, 5, 2);
@@ -133,7 +133,7 @@ export class Orbs extends Weapon {
       const wx = p.pos.x + ox, wz = p.pos.z + oz;
       g.enemies.forEachNear(wx, wz, 1.3, (e) => {
         if (g.time - e.orbHit < 0.45) return;
-        if (Math.hypot(e.x - wx, e.z - wz) < 0.25 + e.t.size * 0.5) {
+        if (Math.hypot(e.x - wx, e.z - wz) < 0.25 + e.size * 0.5) {
           e.orbHit = g.time;
           g.hitEnemy(e, dmg);
           g.enemies.knockback(e, wx, wz, 3);
@@ -205,7 +205,7 @@ export class Aura extends Weapon {
     this.timer = this.cd(0.5);
     const dmg = this.dmg(Aura.damage(this.level));
     g.enemies.forEachNear(p.pos.x, p.pos.z, r + 1, (e) => {
-      if (Math.hypot(e.x - p.pos.x, e.z - p.pos.z) < r + e.t.size * 0.5) {
+      if (Math.hypot(e.x - p.pos.x, e.z - p.pos.z) < r + e.size * 0.5) {
         g.hitEnemy(e, dmg, { quiet: true });
         g.enemies.knockback(e, p.pos.x, p.pos.z, 1.2);
       }
@@ -383,7 +383,7 @@ export class Gun extends Weapon {
       const ocx = e.x - origin.x, ocy = e.t.y - origin.y, ocz = e.z - origin.z;
       const tca = ocx * dir.x + ocy * dir.y + ocz * dir.z;
       if (tca < 0 || tca > 60) continue;
-      const r = Math.max(0.4, e.t.size * 0.6);
+      const r = Math.max(0.4, e.size * 0.6);
       const d2 = ocx * ocx + ocy * ocy + ocz * ocz - tca * tca;
       if (d2 > r * r) continue;
       hits.push({ e, t: tca - Math.sqrt(r * r - d2) });

@@ -21,6 +21,12 @@ const MAX = { bat: 320, ghoul: 220, wraith: 120, brute: 60 };
 const CELL = 2;
 const dummy = new THREE.Object3D();
 const _c = new THREE.Color();
+// Elemental casters keep their distance and lob projectiles; tinted so you can pick them out of the horde.
+export const KINDS = {
+  normal: { tint: null, range: 0, dmg: 0 },
+  fire: { tint: new THREE.Color(1.6, 0.55, 0.3), color: 0xff6a1a, range: 9, cooldown: 3.0, speed: 9, dmg: 14, effect: null },
+  ice: { tint: new THREE.Color(0.6, 1.1, 1.7), color: 0x7fe8ff, range: 10, cooldown: 3.4, speed: 8, dmg: 8, effect: 'slow' },
+};
 const cellKey = (cx, cz) => (cx + 2048) * 4096 + (cz + 2048);
 const _out = { x: 0, z: 0 };
 
@@ -118,16 +124,31 @@ export class EnemyManager {
     this.scene.add(mesh);
     const t = { ...def, boss: true };
     const hp = def.hp * hpMul;
-    const e = { type: 'boss', t, x, z, hp, maxHp: hp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, s: {}, dmgMul: 1 };
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, s: {}, dmgMul: 1 };
     this.list.push(e);
     this.counts.boss++;
     return e;
   }
 
-  spawn(type, x, z, hpMul = 1) {
+  // `casterChance` (0–1) is the share of spawns that become fire/ice casters; bosses summon with 0.
+  spawn(type, x, z, hpMul = 1, casterChance = 0) {
     if (this.counts[type] >= MAX[type]) return null;
     const t = ENEMY_TYPES[type];
-    const e = { type, t, x, z, hp: t.hp * hpMul, flash: 0, phase: Math.random() * Math.PI * 2, kx: 0, kz: 0, orbHit: -1, dead: false };
+    const r = Math.random();
+    const scale = r < 0.06 ? 1.7 : 0.75 + Math.random() * 0.6; // rare giants, otherwise 0.75–1.35
+    const kind = Math.random() < casterChance ? (Math.random() < 0.5 ? 'fire' : 'ice') : 'normal';
+    const k = KINDS[kind];
+    const tint = k.tint ? k.tint.clone() : new THREE.Color().setHSL(Math.random(), 0.5, 0.5).lerp(new THREE.Color(1, 1, 1), 0.7);
+    const e = {
+      type, t, x, z, kind, scale, tint,
+      size: t.size * scale,
+      speed: t.speed * (1.25 - 0.25 * scale), // small ones are quick, giants lumber
+      hp: t.hp * hpMul * Math.pow(scale, 1.5),
+      dmgMul: scale,
+      xp: Math.max(1, Math.round(t.xp * scale)),
+      shootT: k.cooldown ? Math.random() * k.cooldown : 0,
+      flash: 0, phase: Math.random() * Math.PI * 2, kx: 0, kz: 0, orbHit: -1, dead: false,
+    };
     this.list.push(e);
     this.counts[type]++;
     return e;
@@ -145,7 +166,7 @@ export class EnemyManager {
   knockback(e, fromX, fromZ, force) {
     if (e.t.boss) return;
     const dx = e.x - fromX, dz = e.z - fromZ, d = Math.hypot(dx, dz) || 1;
-    force /= e.t.size; // big enemies barely budge
+    force /= e.size; // big enemies barely budge
     e.kx += dx / d * force; e.kz += dz / d * force;
   }
 
@@ -169,7 +190,8 @@ export class EnemyManager {
   }
 
   // Moves everyone toward the player, keeps them from stacking, and returns contact damage dealt this frame.
-  update(dt, playerPos, time, colliders = null) {
+  // `shoot(e, k)` is called when a caster fires.
+  update(dt, playerPos, time, colliders = null, shoot = null) {
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
@@ -190,10 +212,18 @@ export class EnemyManager {
     let contact = 0;
     for (const e of this.list) {
       const dx = px - e.x, dz = pz - e.z, d = Math.hypot(dx, dz) || 0.001;
-      const stop = e.t.size * 0.5 + 0.45;
-      if (!e.t.boss && d > stop) {
-        const s = Math.min(e.t.speed * dt, d - stop);
-        e.x += dx / d * s; e.z += dz / d * s;
+      const stop = e.size * 0.5 + 0.45;
+      const k = KINDS[e.kind];
+      if (!e.t.boss) {
+        if (k.range && d < k.range) {
+          // casters hold their range and fire; if you close in they back off slowly
+          if (d < k.range * 0.6) { e.x -= dx / d * e.speed * 0.5 * dt; e.z -= dz / d * e.speed * 0.5 * dt; }
+          e.shootT -= dt;
+          if (e.shootT <= 0 && shoot) { e.shootT = k.cooldown; shoot(e, k); }
+        } else if (d > stop) {
+          const s = Math.min(e.speed * dt, d - stop);
+          e.x += dx / d * s; e.z += dz / d * s;
+        }
       }
       if (d < stop + 0.3) contact += e.t.dmg * (e.dmgMul || 1) * dt;
 
@@ -205,7 +235,7 @@ export class EnemyManager {
         if (Math.abs(e.kz) < 0.01) e.kz = 0;
       }
 
-      if (colliders && !e.t.fly && !e.t.boss) { colliders.resolve(e.x, e.z, e.t.size * 0.35, _out); e.x = _out.x; e.z = _out.z; }
+      if (colliders && !e.t.fly && !e.t.boss) { colliders.resolve(e.x, e.z, e.size * 0.35, _out); e.x = _out.x; e.z = _out.z; }
       if (e.t.boss) continue; // bosses shove the horde, never the reverse
       const cx = Math.floor(e.x / CELL), cz = Math.floor(e.z / CELL);
       for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {
@@ -214,7 +244,7 @@ export class EnemyManager {
         for (const o of a) {
           if (o === e) continue;
           const sx = e.x - o.x, sz = e.z - o.z, dd = sx * sx + sz * sz;
-          const min = (e.t.size + o.t.size) * 0.5;
+          const min = (e.size + o.size) * 0.5;
           if (dd < min * min && dd > 1e-6) {
             const l = Math.sqrt(dd), push = (min - l) * 0.5;
             e.x += sx / l * push; e.z += sz / l * push;
@@ -237,10 +267,10 @@ export class EnemyManager {
       const bob = e.t.fly ? Math.sin(time * 5 + e.phase) * 0.18 : 0;
       dummy.position.set(e.x, bob, e.z);
       dummy.rotation.set(0, Math.atan2(px - e.x, pz - e.z), 0);
-      dummy.scale.setScalar(1 + e.flash * 0.12);
+      dummy.scale.setScalar(e.scale * (1 + e.flash * 0.12));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
-      m.setColorAt(i, _c.setScalar(1 + e.flash * 3));
+      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(1 + e.flash * 3));
       this.phases[e.type].array[i] = e.phase;
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
     }
