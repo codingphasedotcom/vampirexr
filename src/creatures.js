@@ -109,10 +109,12 @@ const ANIM = /* glsl */ `
 `;
 
 // Lambert with vertex colors, per-instance phase, limb animation and emissive eyes.
-export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}) {
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}, map = null) {
+  const mat = map
+    ? new THREE.MeshLambertMaterial({ map })
+    : new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   mat.defines = { [mode]: '', ANIM_SPEED: speed.toFixed(2), HIP: hip.toFixed(2) };
-  mat.customProgramCacheKey = () => `${mode}-${speed}-${hip}`;
+  mat.customProgramCacheKey = () => `${mode}-${speed}-${hip}-${map ? 'map' : 'vc'}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = enemyTime;
     shader.vertexShader = shader.vertexShader
@@ -120,7 +122,15 @@ export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}) {
       .replace('#include <begin_vertex>', `#include <begin_vertex>\nvGlow = aGlow;\n${ANIM}`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>\nvarying float vGlow;')
-      .replace('#include <opaque_fragment>', 'outgoingLight = mix(outgoingLight, vColor.rgb * 1.8, vGlow);\n#include <opaque_fragment>');
+      .replace('#include <opaque_fragment>', map ? '#include <opaque_fragment>' : 'outgoingLight = mix(outgoingLight, vColor.rgb * 1.8, vGlow);\n#include <opaque_fragment>');
   };
   return mat;
+}
+
+// Give a loaded (textured) geometry the attributes the creature shader expects: whole-body animation weight, no glow.
+export function tagForShaderAnim(geometry, anim = 1) {
+  const n = geometry.attributes.position.count;
+  geometry.setAttribute('aAnim', new THREE.BufferAttribute(new Float32Array(n).fill(anim), 1));
+  geometry.setAttribute('aGlow', new THREE.BufferAttribute(new Float32Array(n), 1));
+  return geometry;
 }

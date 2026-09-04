@@ -59,7 +59,7 @@ export class Game {
     this.input = new Input(this.renderer, this.rig, this.renderer.domElement);
     this.player = new Player();
     this.enemies = new EnemyManager(this.scene);
-    this.enemies.loadModels();
+    this.enemies.loadModels(BOSSES);
     this.gems = new Gems(this.scene);
     this.particles = new Particles(this.scene);
     this.hud = new Hud(this.camera);

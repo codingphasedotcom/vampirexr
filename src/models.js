@@ -7,7 +7,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 // row frames + f = vertex normals at frame f
 // The horde then animates in the vertex shader with a per-instance phase, so 500 enemies stay one draw call.
 
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+
 const loader = new GLTFLoader();
+loader.setMeshoptDecoder(MeshoptDecoder);
 const _m = new THREE.Matrix4(), _skin = new THREE.Matrix4(), _bone = new THREE.Matrix4();
 const _v = new THREE.Vector3(), _n = new THREE.Vector3(), _bind = new THREE.Matrix4(), _bindInv = new THREE.Matrix4();
 

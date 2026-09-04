@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { batGeometry, ghoulGeometry, wraithGeometry, bruteGeometry, creatureMaterial, enemyTime } from './creatures.js';
-import { loadVATModel, vatMaterial, loadStaticModel, staticMaterial } from './models.js';
+import { batGeometry, ghoulGeometry, wraithGeometry, bruteGeometry, creatureMaterial, tagForShaderAnim, enemyTime } from './creatures.js';
+import { loadVATModel, vatMaterial, loadStaticModel } from './models.js';
 
 // `y` is the model's visual centre (used for particles / damage numbers); models stand on y = 0.
 export const ENEMY_TYPES = {
@@ -50,18 +50,29 @@ export class EnemyManager {
 
   // Swap procedural horde meshes for baked-animation GLB models where one is configured.
   // Runs in the background; a type keeps its procedural look if its model fails to load.
-  async loadModels() {
+  // Loads one configured model. Animated GLBs are baked to a VAT; static ones get the procedural
+  // creature shader (flap / wave / shamble) driven by the type's `anim` mode.
+  async loadModel(t) {
+    if (t.model.animated === false) {
+      const m = await loadStaticModel(t.model.url, t.model);
+      tagForShaderAnim(m.geometry);
+      return { geometry: m.geometry, material: creatureMaterial(t.anim[0], t.anim[1], m.map) };
+    }
+    const vat = await loadVATModel(t.model.url, t.model);
+    return { geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }) };
+  }
+
+  async loadModels(bossDefs = []) {
+    this.bossModels = {};
+    for (const def of bossDefs) {
+      if (!def.model) continue;
+      this.loadModel(def).then((m) => { this.bossModels[def.name] = m; })
+        .catch((err) => console.warn(`Boss model for ${def.name} not loaded, keeping procedural:`, err.message || err));
+    }
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       if (!t.model) continue;
       try {
-        let geometry, material;
-        if (t.model.animated === false) {
-          const m = await loadStaticModel(t.model.url, t.model);
-          geometry = m.geometry; material = staticMaterial(m, enemyTime);
-        } else {
-          const vat = await loadVATModel(t.model.url, t.model);
-          geometry = vat.geometry; material = vatMaterial(vat, enemyTime, { rate: t.model.rate });
-        }
+        const { geometry, material } = await this.loadModel(t);
         geometry.setAttribute('aPhase', this.phases[name]);
         const mesh = new THREE.InstancedMesh(geometry, material, MAX[name]);
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -80,9 +91,17 @@ export class EnemyManager {
 
   // Bosses get their own Mesh (not instanced) and drive their own movement via t.ai.
   spawnBoss(def, x, z, hpMul = 1) {
-    const geo = def.build();
+    let geo, material;
+    const loaded = this.bossModels?.[def.name];
+    if (loaded) {
+      geo = loaded.geometry.clone();
+      material = loaded.material;
+    } else {
+      geo = def.build();
+      material = creatureMaterial(def.anim[0], def.anim[1]);
+    }
     geo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
-    const mesh = new THREE.Mesh(geo, creatureMaterial(def.anim[0], def.anim[1]));
+    const mesh = new THREE.Mesh(geo, material);
     mesh.frustumCulled = false;
     this.scene.add(mesh);
     const t = { ...def, boss: true };
