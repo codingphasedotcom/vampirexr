@@ -17,6 +17,7 @@ import { Chests } from './chests.js';
 import { Minimap } from './minimap.js';
 import { getChoices } from './upgrades.js';
 import { World } from './world.js';
+import { LEVELS, levelById } from './levels/index.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
 import { rand, fmtTime } from './utils.js';
 import { settings, saveSettings } from './settings.js';
@@ -57,13 +58,13 @@ export class Game {
     this.rig.add(this.camera);
     this.scene.add(this.rig);
 
-    this.world = new World(this.scene);
+    this.world = new World(this.scene, levelById(settings.level));
     this.glow = new GlowLayer(this.scene);
     this.numbers = new DamageNumbers(this.scene);
     this.bossFx = new BossFx(this.scene);
     this.chests = new Chests(this.scene);
     this.crosshair = document.getElementById('crosshair');
-    this.playerLight = new THREE.PointLight(0xffc38a, 14, 11, 2);
+    this.playerLight = new THREE.PointLight(0xffc38a, this.world.level.playerLight, 11, 2);
     this.scene.add(this.playerLight);
 
     this.input = new Input(this.renderer, this.rig, this.renderer.domElement);
@@ -94,6 +95,7 @@ export class Game {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.6, 0.72);
     this.composer.addPass(this.bloom);
+    this.applyLevelLook();
     this.composer.addPass(new OutputPass());
 
     this.overlay = document.getElementById('overlay');
@@ -149,16 +151,37 @@ export class Game {
       el.onchange = () => { settings[key] = parse(el.value); saveSettings(); };
     };
     bind('setTurn', 'turn');
+    bind('setLevel', 'level');
     bind('setVignette', 'vignette', (v) => v === '1');
     bind('setHud', 'hud');
+  }
+
+  // Rebuilds the world when the chosen level differs from the one loaded; also syncs bloom and player light.
+  applyLevelLook() {
+    const level = levelById(settings.level);
+    if (this.world.level !== level) {
+      this.world.dispose();
+      this.world = new World(this.scene, level);
+    }
+    this.bloom.strength = level.bloom.strength;
+    this.bloom.threshold = level.bloom.threshold;
+    this.playerLight.intensity = level.playerLight;
+  }
+
+  cycleLevel() {
+    const i = LEVELS.findIndex((l) => l.id === settings.level);
+    settings.level = LEVELS[(i + 1) % LEVELS.length].id;
+    saveSettings();
   }
 
   // ---------- in-world menus (VR) ----------
 
   showVrMenu() {
     this.state = 'menu';
+    const level = levelById(settings.level);
     this.menu.show('', 'Point at a card and pull the trigger (or pinch)', [
-      { kind: 'weapon', title: 'Start', sub: 'Play', desc: 'Survive the night. Weapons fire on their own; you aim the revolver.', apply: () => this.start() },
+      { kind: 'weapon', title: 'Start', sub: 'Play', desc: 'Survive 25 waves. Weapons fire on their own; you aim the revolver.', apply: () => this.start() },
+      { kind: 'bonus', title: `Level: ${level.name}`, sub: 'Select', desc: level.desc, apply: () => { this.cycleLevel(); this.applyLevelLook(); this.showVrMenu(); } },
       { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
     ], (item) => item.apply(), true, { logo: true, art: true });
   }
@@ -241,6 +264,7 @@ export class Game {
 
   start() {
     this.sfx.init();
+    this.applyLevelLook();
     this.player.reset();
     this.enemies.reset();
     this.gems.reset();

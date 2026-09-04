@@ -27,7 +27,8 @@ Your revolver is aimed by you; every other weapon fires on its own. Collect the 
 
 ## Structure
 
-- `src/game.js` — loop, state machine, spawn director, XR session
+- `src/game.js` — loop, state machine, wave director, XR session
+- `src/levels/` — Graveyard (night), Village (day), City (night): sky, lights, ground, props with colliders
 - `src/enemies.js` — instanced enemies with a spatial grid for separation and queries
 - `src/weapons.js` — Revolver (player-aimed), Arcane Bolt, Spirit Orbs, Holy Ground, Thunder
 - `src/bosses.js` — six bosses with their own models, AI, projectiles and shockwaves
