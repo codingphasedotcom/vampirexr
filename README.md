@@ -23,7 +23,7 @@ WebXR needs a secure context, so `dev:vr` serves over HTTPS with a self-signed c
 | Hand tracking (no controllers) | — | Swing arms to run, pinch to shoot / pick |
 
 Your revolver is aimed by you; every other weapon fires on its own. Collect the gems enemies drop to level up.
-A boss spawns at levels 5, 10, 15, 20, 25 and 30 (the level cap). Kill the level-30 Vampire Lord to win.
+25 waves, starting at 10 monsters and growing ~18% per wave (max 200 alive). Bosses on waves 4, 8, 12, 17 and 25; kill the Vampire Lord on wave 25 to win. Golden beams mark chests that give a free upgrade.
 
 ## Structure
 

@@ -13,6 +13,7 @@ import { Menu } from './menu.js';
 import { Sfx } from './sfx.js';
 import { Wand, Gun } from './weapons.js';
 import { BOSSES, BossFx } from './bosses.js';
+import { Chests } from './chests.js';
 import { getChoices } from './upgrades.js';
 import { World } from './world.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
@@ -21,7 +22,11 @@ import { settings, saveSettings } from './settings.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
-const MAX_ENEMIES = 500;
+const MAX_ENEMIES = 200; // hard cap on monsters alive at once
+const WAVES = 25;
+const BOSS_WAVES = { 4: 'Bat Lord', 8: 'Grave Golem', 12: 'Necromancer', 17: 'Wraith Queen', 25: 'Vampire Lord' };
+const waveCount = (w) => Math.floor(10 * Math.pow(1.18, w - 1)); // 10, 12, 14 … ~44 at wave 10, ~530 at wave 25
+const waveHpMul = (w) => 1 + (w - 1) * 0.12 + (w - 1) * (w - 1) * 0.006;
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 
@@ -29,7 +34,8 @@ const INTRO = `Survive the horde. Weapons fire on their own — you just move.<b
 <b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
 <b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
-A boss appears every 5 levels. Reach level 30 and slay the Vampire Lord to win.`;
+Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
+Golden light beams mark treasure chests: walk into one for a free upgrade.`;
 
 export class Game {
   constructor() {
@@ -52,6 +58,7 @@ export class Game {
     this.glow = new GlowLayer(this.scene);
     this.numbers = new DamageNumbers(this.scene);
     this.bossFx = new BossFx(this.scene);
+    this.chests = new Chests(this.scene);
     this.crosshair = document.getElementById('crosshair');
     this.playerLight = new THREE.PointLight(0xffc38a, 14, 11, 2);
     this.scene.add(this.playerLight);
@@ -71,9 +78,8 @@ export class Game {
     this.sfx = new Sfx();
     this.weapons = [];
     this.boss = null;
-    this.bossQueue = [];
-    this.nextBoss = 0;
     this.hpMul = 1;
+    this.wave = 0; this.waveTotal = 0; this.waveSpawned = 0; this.waveTimer = 0; this.waveBreak = 0; this.waveRate = 1;
     this.clock = new THREE.Clock();
     this.state = 'menu'; // menu | playing | levelup | gameover | paused
     this.time = 0;
@@ -231,12 +237,14 @@ export class Game {
     this.enemies.reset();
     this.gems.reset();
     this.bossFx.reset();
+    this.chests.reset();
     for (const w of this.weapons) w.dispose();
     this.weapons = [];
     this.addWeapon(Gun);
     this.addWeapon(Wand);
-    this.boss = null; this.bossQueue = []; this.nextBoss = 0; this.hpMul = 1;
-    this.time = 0; this.spawnAcc = 0; this.nextWave = 40; this.waveNo = 0;
+    this.boss = null; this.hpMul = 1;
+    this.time = 0; this.spawnAcc = 0;
+    this.wave = 0; this.waveBreak = 1.5; // first wave starts after a short breather
     this.pendingLevels = 0; this.hurtTimer = 0;
     this.hud.toastTimer = 0;
     this.rig.position.set(0, 0, 0);
@@ -289,7 +297,7 @@ export class Game {
 
   spawnBoss(def) {
     const a = rand(0, Math.PI * 2), p = this.player.pos;
-    this.boss = this.enemies.spawnBoss(def, p.x + Math.cos(a) * 14, p.z + Math.sin(a) * 14, 1);
+    this.boss = this.enemies.spawnBoss(def, p.x + Math.cos(a) * 14, p.z + Math.sin(a) * 14, 1 + (this.wave - 1) * 0.03);
     this.particles.burst(this.boss.x, def.y, this.boss.z, def.color, 60, 6);
     this.hud.toast(`⚠ ${def.name.toUpperCase()} ⚠`, 4);
     this.sfx.roar();
@@ -330,11 +338,12 @@ export class Game {
     if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
+    this.chests.draw(fxTime.value, this.glow);
     this.particles.update(dt);
     this.numbers.update(dt);
     this.world.update(dt, fxTime.value, this.player.pos);
     this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
-    this.hud.update(dt, this.player, this.time, this.boss);
+    this.hud.update(dt, this.player, this.time, this.boss, this.waveInfo());
     this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');
     this.glow.end();
     if (xr) this.renderer.render(this.scene, this.camera);
@@ -416,6 +425,7 @@ export class Game {
       this.pendingLevels += p.addXp(v);
       this.sfx.pickup();
     });
+    this.chests.update(dt, p, () => this.openChest());
     p.heal(p.stats.regen * dt);
     this.hurtTimer -= dt;
     if (contact > 0) {
@@ -425,31 +435,67 @@ export class Game {
     if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
     if (this.state !== 'playing') return; // victory may have ended the run this frame
     if (this.pendingLevels > 0) { this.openLevelUp(); return; }
-    // one boss per five levels, one at a time
-    while (this.nextBoss < BOSSES.length && p.level >= BOSSES[this.nextBoss].level) this.bossQueue.push(BOSSES[this.nextBoss++]);
-    if (!this.boss && this.bossQueue.length) this.spawnBoss(this.bossQueue.shift());
   }
 
-  // ---------- spawning ----------
+  // A chest hands out one random upgrade from the same pool as level-ups.
+  openChest() {
+    const choices = getChoices(this);
+    const item = choices[Math.floor(Math.random() * choices.length)];
+    item.apply();
+    this.hud.toast(`Chest: ${item.title} ${item.sub}`.trim(), 3);
+    this.particles.burst(this.player.pos.x, 1, this.player.pos.z, 0xffd166, 40, 4);
+    this.sfx.levelup();
+  }
+
+  waveInfo() {
+    const remaining = Math.max(0, this.waveTotal - this.waveSpawned) + this.enemies.alive;
+    return { wave: this.wave, total: WAVES, remaining, brk: this.waveBreak > 0 };
+  }
+
+  // ---------- waves ----------
+
+  startWave(w) {
+    this.wave = w;
+    this.waveTotal = BOSS_WAVES[w] ? Math.ceil(waveCount(w) / 2) : waveCount(w);
+    this.waveSpawned = 0;
+    this.waveTimer = 0;
+    this.spawnAcc = 0;
+    this.waveRate = Math.max(0.6, this.waveTotal / 35); // spread the wave over ~35 s
+    this.hpMul = waveHpMul(w);
+    const bossName = BOSS_WAVES[w];
+    if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
+    this.hud.toast(bossName ? `WAVE ${w} — ${bossName.toUpperCase()}` : `WAVE ${w}`, 3);
+    const chests = bossName ? 2 : 1;
+    for (let i = 0; i < chests; i++) {
+      const a = rand(0, Math.PI * 2), d = rand(10, 22), p = this.player.pos;
+      const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d, r = Math.hypot(x, z);
+      const k = r > ARENA_RADIUS - 5 ? (ARENA_RADIUS - 5) / r : 1;
+      this.chests.spawn(x * k, z * k);
+    }
+  }
 
   spawnDirector(dt) {
-    const t = this.time;
-    const rate = Math.min(0.5 + t * 0.025, 12); // enemies per second
-    const m = t / 60;
-    const hpMul = this.hpMul = 1 + m * 0.35 + m * m * 0.06; // quadratic so maxed builds still get overwhelmed
-    this.spawnAcc += rate * dt;
-    while (this.spawnAcc >= 1) {
-      this.spawnAcc -= 1;
-      if (this.enemies.alive < MAX_ENEMIES) this.spawnAt(this.pickType(t), rand(0, Math.PI * 2), rand(22, 30), hpMul);
+    if (this.waveBreak > 0) {
+      this.waveBreak -= dt;
+      if (this.waveBreak <= 0) this.startWave(this.wave + 1);
+      return;
     }
-    if (t >= this.nextWave) {
-      this.nextWave += 45;
-      this.waveNo++;
-      const n = 24 + this.waveNo * 8;
-      const type = this.waveNo % 3 === 0 ? 'wraith' : this.waveNo >= 2 ? 'ghoul' : 'bat';
-      for (let i = 0; i < n; i++) this.spawnAt(type, (i / n) * Math.PI * 2, 16, hpMul);
-      for (let i = 0; i < Math.floor(this.waveNo / 2); i++) this.spawnAt('brute', rand(0, Math.PI * 2), 18, hpMul * 1.5);
-      this.hud.toast('A horde approaches!');
+    if (this.wave === 0) return;
+    this.waveTimer += dt;
+    if (this.waveSpawned < this.waveTotal) {
+      this.spawnAcc += this.waveRate * dt;
+      while (this.spawnAcc >= 1 && this.waveSpawned < this.waveTotal && this.enemies.alive < MAX_ENEMIES) {
+        this.spawnAcc -= 1;
+        this.spawnAt(this.pickType(this.wave), rand(0, Math.PI * 2), rand(22, 30), this.hpMul);
+        this.waveSpawned++;
+      }
+      if (this.enemies.alive >= MAX_ENEMIES) this.spawnAcc = Math.min(this.spawnAcc, 1);
+    }
+    // wave is over once everything has spawned and died (a couple of stragglers, or 2 minutes, won't hold it up)
+    const cleared = this.waveSpawned >= this.waveTotal && !this.boss && (this.enemies.alive <= 2 || this.waveTimer > 120);
+    if (cleared && this.wave < WAVES) {
+      this.waveBreak = 3;
+      this.hud.toast(`Wave ${this.wave} cleared!`, 2.5);
     }
   }
 
@@ -457,17 +503,18 @@ export class Game {
     this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul);
   }
 
-  pickType(t) {
-    const w = {
-      bat: 10,
-      ghoul: t > 20 ? 5 + t / 30 : 0,
-      wraith: t > 90 ? 2 + t / 60 : 0,
-      brute: t > 150 ? 0.5 + t / 150 : 0,
+  pickType(w) {
+    const wt = {
+      bat: Math.max(3, 10 - Math.max(0, w - 10) * 0.5),
+      ghoul: w >= 2 ? 4 + w * 0.5 : 0,
+      wraith: w >= 6 ? 2 + (w - 6) * 0.6 : 0,
+      brute: w >= 10 ? 1 + (w - 10) * 0.4 : 0,
     };
     let total = 0;
-    for (const k in w) total += w[k];
+    for (const k in wt) total += wt[k];
     let r = Math.random() * total;
-    for (const k in w) { r -= w[k]; if (r <= 0) return k; }
+    for (const k in wt) { r -= wt[k]; if (r <= 0) return k; }
     return 'bat';
   }
+
 }

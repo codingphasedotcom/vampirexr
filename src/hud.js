@@ -82,7 +82,7 @@ export class Hud {
   }
   toast(text, seconds = 2.5) { this.toastText = text; this.toastTimer = seconds; }
 
-  update(dt, player, time, boss) {
+  update(dt, player, time, boss, wave) {
     this.flash = Math.max(0, this.flash - dt * 1.2);
     this.vignette.material.opacity = this.flash;
     this.comfort.material.opacity += (this.comfortTarget - this.comfort.material.opacity) * Math.min(1, dt * 8);
@@ -90,7 +90,7 @@ export class Hud {
     this.acc += dt;
     if (this.acc < 0.1) return;
     this.acc = 0;
-    this.draw(player, time, boss);
+    this.draw(player, time, boss, wave);
     if (this.mode === 'wrist') this.drawAlerts(boss);
   }
 
@@ -115,7 +115,7 @@ export class Hud {
     this.alertTex.needsUpdate = true;
   }
 
-  draw(p, time, boss) {
+  draw(p, time, boss, wave) {
     const g = this.ctx;
     g.clearRect(0, 0, W, H);
     const top = boss ? 0 : BOSS_ROW;
@@ -150,8 +150,16 @@ export class Hud {
     } else {
       g.fillStyle = '#fff';
       g.textAlign = 'left'; g.fillText(maxed ? `LV ${p.level} MAX` : `LV ${p.level}`, 20, oy + 106);
-      g.textAlign = 'center'; g.fillText(fmtTime(time), 256, oy + 106);
       g.textAlign = 'right'; g.fillText(`☠ ${p.kills}`, 492, oy + 106);
+      if (wave && wave.wave > 0) {
+        g.textAlign = 'center';
+        g.fillStyle = wave.brk ? '#ffd166' : '#fff';
+        g.fillText(`WAVE ${wave.wave}/${wave.total}`, 256, oy + 96);
+        g.font = '16px system-ui, sans-serif'; g.fillStyle = '#bbb';
+        g.fillText(wave.brk ? 'next wave incoming' : `${wave.remaining} left · ${fmtTime(time)}`, 256, oy + 124);
+      } else {
+        g.textAlign = 'center'; g.fillText(fmtTime(time), 256, oy + 106);
+      }
     }
     this.tex.needsUpdate = true;
   }
