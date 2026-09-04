@@ -9,7 +9,8 @@ const TIERS = [
   { min: 3, color: new THREE.Color(0x6bff7a), scale: 1.25 },
   { min: 0, color: new THREE.Color(0x4de1ff), scale: 1 },
 ];
-const tierFor = (v) => TIERS.find((t) => v >= t.min);
+const HEAL = { color: new THREE.Color(0xff3b5c), scale: 1.5 };
+const tierFor = (g) => (g.heal ? HEAL : TIERS.find((t) => g.v >= t.min));
 
 export class Gems {
   constructor(scene) {
@@ -31,6 +32,12 @@ export class Gems {
     this.list.push({ x, z, v, phase: Math.random() * Math.PI * 2, pull: false });
   }
 
+  // Red orb that restores health on pickup.
+  spawnHeal(x, z) {
+    if (this.list.length >= MAX) return;
+    this.list.push({ x, z, v: 0, heal: true, phase: Math.random() * Math.PI * 2, pull: false });
+  }
+
   update(dt, player, onCollect) {
     const px = player.pos.x, pz = player.pos.z;
     let w = 0;
@@ -41,7 +48,7 @@ export class Gems {
         const s = Math.min(d, (8 + 10 / (d + 0.5)) * dt);
         if (d > 0.001) { g.x += dx / d * s; g.z += dz / d * s; }
       }
-      if (d < 0.6) { onCollect(g.v); continue; }
+      if (d < 0.6) { onCollect(g); continue; }
       this.list[w++] = g;
     }
     this.list.length = w;
@@ -51,7 +58,7 @@ export class Gems {
   draw(time, glow) {
     const n = this.list.length;
     for (let i = 0; i < n; i++) {
-      const g = this.list[i], t = tierFor(g.v);
+      const g = this.list[i], t = tierFor(g);
       const y = 0.5 + Math.sin(time * 3 + g.phase) * 0.08;
       dummy.position.set(g.x, y, g.z);
       dummy.rotation.set(0, time * 2 + g.phase, 0);
@@ -59,7 +66,7 @@ export class Gems {
       dummy.updateMatrix();
       this.mesh.setMatrixAt(i, dummy.matrix);
       this.mesh.setColorAt(i, t.color);
-      glow.add(g.x, y, g.z, 0.45 * t.scale, t.color, 0.8);
+      glow.add(g.x, y, g.z, (g.heal ? 0.7 : 0.45) * t.scale, t.color, g.heal ? 1.1 : 0.8);
     }
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;

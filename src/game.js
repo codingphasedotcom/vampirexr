@@ -347,6 +347,8 @@ export class Game {
     if (died) {
       this.player.kills++;
       this.gems.spawn(e.x, e.z, e.xp ?? e.t.xp);
+      if (e.t.boss) { for (let i = 0; i < 3; i++) this.gems.spawnHeal(e.x + rand(-1.5, 1.5), e.z + rand(-1.5, 1.5)); }
+      else if (Math.random() < 0.05) this.gems.spawnHeal(e.x, e.z);
       this.particles.burst(e.x, e.t.y, e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
       this.sfx.kill();
       if (e.t.boss) {
@@ -372,8 +374,6 @@ export class Game {
     if (this.state === 'playing') this.tick(dt);
     else if (this.menu.open) this.menu.update(xr);
     if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
-    const mapMode = xr && settings.hud === 'wrist' ? 'wrist' : 'camera';
-    if (this.minimap.mode !== mapMode) { this.minimap.setMode(mapMode); if (mapMode === 'wrist') this.hud.anchor.add(this.minimap.mesh); }
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
@@ -472,8 +472,12 @@ export class Game {
     });
     for (const w of this.weapons) w.update(dt);
     this.bossFx.update(dt, this);
-    this.gems.update(dt, p, (v) => {
-      this.pendingLevels += p.addXp(v);
+    this.gems.update(dt, p, (g) => {
+      if (g.heal) {
+        p.heal(Math.round(p.maxHp * 0.25));
+        this.hud.toast(`+${Math.round(p.maxHp * 0.25)} HP`, 1.2);
+        this.particles.burst(p.pos.x, 1.2, p.pos.z, 0xff3b5c, 16, 3);
+      } else this.pendingLevels += p.addXp(g.v);
       this.sfx.pickup();
     });
     this.chests.update(dt, p, () => this.openChest());

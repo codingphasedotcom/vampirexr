@@ -16,14 +16,10 @@ export class Minimap {
     this.mesh.renderOrder = 999;
     this.camera = camera;
     this.acc = 1;
-    this.setMode('camera');
-  }
-
-  setMode(mode) {
-    this.mesh.parent?.remove(this.mesh);
-    this.mode = mode;
-    if (mode === 'wrist') { this.mesh.position.set(0, 0.16, 0); this.mesh.scale.setScalar(0.75); }
-    else { this.mesh.position.set(0.36, 0.2, -0.9); this.mesh.scale.setScalar(1.25); this.camera.add(this.mesh); }
+    // bottom-right of view, beside the HP panel; the same spot on desktop and in the headset
+    this.mesh.position.set(0.46, -0.27, -0.9);
+    this.mesh.scale.setScalar(1.15);
+    camera.add(this.mesh);
   }
 
   update(dt, game) {
