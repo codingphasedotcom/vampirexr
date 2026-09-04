@@ -96,7 +96,49 @@ function crossGeometry() {
   ]);
 }
 
-function scatter(mesh, count, rMin, rMax, place) {
+// Colliders are circles {x, z, r} or wall segments {x1, z1, x2, z2, r}, bucketed on a coarse grid.
+const CELL = 6;
+const ckey = (cx, cz) => (cx + 512) * 1024 + (cz + 512);
+
+export class Colliders {
+  constructor() { this.grid = new Map(); this.all = []; }
+  add(col) {
+    this.all.push(col);
+    const xs = col.x1 !== undefined ? [col.x1, col.x2] : [col.x], zs = col.z1 !== undefined ? [col.z1, col.z2] : [col.z];
+    const x0 = Math.floor((Math.min(...xs) - col.r) / CELL), x1 = Math.floor((Math.max(...xs) + col.r) / CELL);
+    const z0 = Math.floor((Math.min(...zs) - col.r) / CELL), z1 = Math.floor((Math.max(...zs) + col.r) / CELL);
+    for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) {
+      const k = ckey(cx, cz);
+      let a = this.grid.get(k);
+      if (!a) { a = []; this.grid.set(k, a); }
+      a.push(col);
+    }
+  }
+  // Pushes a circle of radius `r` at (x, z) out of anything it overlaps. Mutates and returns `out`.
+  resolve(x, z, r, out) {
+    out.x = x; out.z = z;
+    const a = this.grid.get(ckey(Math.floor(x / CELL), Math.floor(z / CELL)));
+    if (!a) return out;
+    for (const c of a) {
+      let nx, nz, d, min;
+      if (c.x1 !== undefined) {
+        const ex = c.x2 - c.x1, ez = c.z2 - c.z1, len2 = ex * ex + ez * ez || 1;
+        let t = ((out.x - c.x1) * ex + (out.z - c.z1) * ez) / len2;
+        t = Math.max(0, Math.min(1, t));
+        nx = out.x - (c.x1 + ex * t); nz = out.z - (c.z1 + ez * t);
+      } else { nx = out.x - c.x; nz = out.z - c.z; }
+      d = Math.hypot(nx, nz); min = c.r + r;
+      if (d < min) {
+        if (d < 1e-4) { nx = 1; nz = 0; d = 1; }
+        out.x += nx / d * (min - d); out.z += nz / d * (min - d);
+      }
+    }
+    return out;
+  }
+  overlaps(x, z, r) { const o = { x, z }; this.resolve(x, z, r, o); return o.x !== x || o.z !== z; }
+}
+
+function scatter(mesh, count, rMin, rMax, place, colliders, radiusFn) {
   for (let i = 0; i < count; i++) {
     const a = rand(0, Math.PI * 2), r = rand(rMin, rMax);
     _d.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
@@ -104,6 +146,7 @@ function scatter(mesh, count, rMin, rMax, place) {
     place(_d, i);
     _d.updateMatrix();
     mesh.setMatrixAt(i, _d.matrix);
+    if (colliders && radiusFn) colliders.add({ x: _d.position.x, z: _d.position.z, r: radiusFn(_d) });
   }
   return mesh;
 }
@@ -111,6 +154,8 @@ function scatter(mesh, count, rMin, rMax, place) {
 // Static scenery + slow ambient motion (clouds, fireflies).
 export class World {
   constructor(scene) {
+    this.colliders = new Colliders();
+    const col = this.colliders;
     scene.fog = new THREE.FogExp2(HORIZON, 0.022);
     scene.background = null;
 
@@ -178,16 +223,16 @@ export class World {
 
     scene.add(scatter(new THREE.InstancedMesh(tombGeometry(), stone, 140), 140, 7, 85, (d) => {
       d.rotation.set(rand(-0.15, 0.15), rand(0, Math.PI * 2), rand(-0.12, 0.12)); d.scale.setScalar(rand(0.8, 1.5));
-    }));
+    }, col, (d) => 0.3 * d.scale.x));
     scene.add(scatter(new THREE.InstancedMesh(crossGeometry(), stone, 60), 60, 7, 85, (d) => {
       d.rotation.set(rand(-0.2, 0.2), rand(0, Math.PI * 2), rand(-0.15, 0.15)); d.scale.setScalar(rand(0.8, 1.3));
-    }));
+    }, col, (d) => 0.18 * d.scale.x));
     scene.add(scatter(new THREE.InstancedMesh(treeGeometry(), wood, 45), 45, 12, 88, (d) => {
       d.rotation.set(rand(-0.08, 0.08), rand(0, Math.PI * 2), rand(-0.08, 0.08)); d.scale.setScalar(rand(0.9, 1.8));
-    }));
+    }, col, (d) => 0.32 * d.scale.x));
     scene.add(scatter(new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.5, 4, 8).translate(0, 2, 0), stone, 28), 28, 10, 80, (d) => {
       d.rotation.set(rand(-0.05, 0.05), rand(0, Math.PI * 2), rand(-0.05, 0.05)); d.scale.set(1, rand(0.4, 1.2), 1);
-    }));
+    }, col, () => 0.5));
 
     // fence runs: a few straight lines of segments
     const fence = new THREE.InstancedMesh(fenceGeometry(), iron, 90);
@@ -200,6 +245,7 @@ export class World {
         _d.rotation.set(0, -dir, 0); _d.scale.setScalar(1);
         _d.updateMatrix();
         fence.setMatrixAt(fi++, _d.matrix);
+        col.add({ x1: _d.position.x - Math.cos(dir), z1: _d.position.z - Math.sin(dir), x2: _d.position.x + Math.cos(dir), z2: _d.position.z + Math.sin(dir), r: 0.12 });
       }
     }
     fence.count = fi;

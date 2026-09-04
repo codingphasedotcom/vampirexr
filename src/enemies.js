@@ -22,6 +22,7 @@ const CELL = 2;
 const dummy = new THREE.Object3D();
 const _c = new THREE.Color();
 const cellKey = (cx, cz) => (cx + 2048) * 4096 + (cz + 2048);
+const _out = { x: 0, z: 0 };
 
 export class EnemyManager {
   constructor(scene) {
@@ -168,7 +169,7 @@ export class EnemyManager {
   }
 
   // Moves everyone toward the player, keeps them from stacking, and returns contact damage dealt this frame.
-  update(dt, playerPos, time) {
+  update(dt, playerPos, time, colliders = null) {
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
@@ -204,6 +205,7 @@ export class EnemyManager {
         if (Math.abs(e.kz) < 0.01) e.kz = 0;
       }
 
+      if (colliders && !e.t.fly && !e.t.boss) { colliders.resolve(e.x, e.z, e.t.size * 0.35, _out); e.x = _out.x; e.z = _out.z; }
       if (e.t.boss) continue; // bosses shove the horde, never the reverse
       const cx = Math.floor(e.x / CELL), cz = Math.floor(e.z / CELL);
       for (let ox = -1; ox <= 1; ox++) for (let oz = -1; oz <= 1; oz++) {

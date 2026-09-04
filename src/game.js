@@ -14,6 +14,7 @@ import { Sfx } from './sfx.js';
 import { Wand, Gun } from './weapons.js';
 import { BOSSES, BossFx } from './bosses.js';
 import { Chests } from './chests.js';
+import { Minimap } from './minimap.js';
 import { getChoices } from './upgrades.js';
 import { World } from './world.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
@@ -29,6 +30,8 @@ const waveCount = (w) => Math.floor(10 * Math.pow(1.18, w - 1)); // 10, 12, 14 â
 const waveHpMul = (w) => 1 + (w - 1) * 0.12 + (w - 1) * (w - 1) * 0.006;
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
+const _col = { x: 0, z: 0 };
+const PLAYER_RADIUS = 0.35;
 
 const INTRO = `Survive the horde. Weapons fire on their own â€” you just move.<br><br>
 <b>Desktop:</b> WASD to move, mouse to look, 1 / 2 / 3 to pick upgrades.<br>
@@ -74,6 +77,7 @@ export class Game {
     this.particles = new Particles(this.scene);
     this.hud = new Hud(this.camera);
     this.scene.add(this.hud.anchor);
+    this.minimap = new Minimap(this.camera);
     this.menu = new Menu(this.scene, this.camera, this.input);
     this.sfx = new Sfx();
     this.weapons = [];
@@ -336,6 +340,8 @@ export class Game {
     if (this.state === 'playing') this.tick(dt);
     else if (this.menu.open) this.menu.update(xr);
     if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
+    const mapMode = xr && settings.hud === 'wrist' ? 'wrist' : 'camera';
+    if (this.minimap.mode !== mapMode) { this.minimap.setMode(mapMode); if (mapMode === 'wrist') this.hud.anchor.add(this.minimap.mesh); }
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
@@ -344,6 +350,7 @@ export class Game {
     this.world.update(dt, fxTime.value, this.player.pos);
     this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
     this.hud.update(dt, this.player, this.time, this.boss, this.waveInfo());
+    this.minimap.update(dt, this);
     this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');
     this.glow.end();
     if (xr) this.renderer.render(this.scene, this.camera);
@@ -385,8 +392,11 @@ export class Game {
         }
       }
     }
+    // keep the player out of props (also nudges the rig if you physically lean into one in VR)
     const h = this.headPos();
-    this.player.pos.set(h.x, 0, h.z);
+    this.world.colliders.resolve(h.x, h.z, PLAYER_RADIUS, _col);
+    if (_col.x !== h.x || _col.z !== h.z) { this.rig.position.x += _col.x - h.x; this.rig.position.z += _col.z - h.z; this.headPos(); }
+    this.player.pos.set(_col.x, 0, _col.z);
     this.hud.setComfort(xr && settings.vignette ? Math.min(1, moving * 0.85 + turning * 0.9) : 0);
   }
 
@@ -418,7 +428,7 @@ export class Game {
     this.time += dt;
     this.spawnDirector(dt);
     if (this.boss) this.boss.t.ai(this.boss, dt, this);
-    const contact = this.enemies.update(dt, p.pos, this.time);
+    const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders);
     for (const w of this.weapons) w.update(dt);
     this.bossFx.update(dt, this);
     this.gems.update(dt, p, (v) => {
@@ -470,7 +480,8 @@ export class Game {
       const a = rand(0, Math.PI * 2), d = rand(10, 22), p = this.player.pos;
       const x = p.x + Math.cos(a) * d, z = p.z + Math.sin(a) * d, r = Math.hypot(x, z);
       const k = r > ARENA_RADIUS - 5 ? (ARENA_RADIUS - 5) / r : 1;
-      this.chests.spawn(x * k, z * k);
+      this.world.colliders.resolve(x * k, z * k, 1.2, _col); // never inside a tree or fence
+      this.chests.spawn(_col.x, _col.z);
     }
   }
 
