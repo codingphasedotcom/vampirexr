@@ -40,7 +40,7 @@ export class Minimap {
     g.strokeStyle = 'rgba(255,255,255,0.12)'; g.lineWidth = 1;
     for (const r of [0.33, 0.66]) { g.beginPath(); g.arc(c, c, c * r, 0, Math.PI * 2); g.stroke(); }
     g.translate(c, c);
-    g.rotate(-yaw); // world → screen: rotate so the look direction points up
+    g.rotate(yaw); // world → screen: rotate so the look direction points up
     const k = c / RANGE;
     const dot = (x, z, color, r) => {
       const dx = (x - p.x) * k, dz = (z - p.z) * k;

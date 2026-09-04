@@ -27,7 +27,7 @@ const ARENA_RADIUS = 90;
 const MAX_ENEMIES = 200; // hard cap on monsters alive at once
 const WAVES = 25;
 const BOSS_WAVES = { 4: 'Bat Lord', 8: 'Grave Golem', 12: 'Necromancer', 17: 'Wraith Queen', 25: 'Vampire Lord' };
-const waveCount = (w) => Math.floor(10 * Math.pow(1.18, w - 1)); // 10, 12, 14 … ~44 at wave 10, ~530 at wave 25
+const waveCount = (w) => Math.floor(30 * Math.pow(1.16, w - 1)); // 30, 35, 40 … ~115 at wave 10, ~1050 at wave 25 (200 alive cap)
 const waveHpMul = (w) => 1 + (w - 1) * 0.12 + (w - 1) * (w - 1) * 0.006;
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
@@ -497,11 +497,11 @@ export class Game {
 
   startWave(w) {
     this.wave = w;
-    this.waveTotal = BOSS_WAVES[w] ? Math.ceil(waveCount(w) / 2) : waveCount(w);
+    this.waveTotal = BOSS_WAVES[w] ? Math.ceil(waveCount(w) * 0.6) : waveCount(w);
     this.waveSpawned = 0;
     this.waveTimer = 0;
     this.spawnAcc = 0;
-    this.waveRate = Math.max(0.6, this.waveTotal / 35); // spread the wave over ~35 s
+    this.waveRate = Math.max(1.5, this.waveTotal / 25); // spread the wave over ~25 s
     this.hpMul = waveHpMul(w);
     const bossName = BOSS_WAVES[w];
     if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
