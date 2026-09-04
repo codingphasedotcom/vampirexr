@@ -163,7 +163,7 @@ export function vatMaterial(vat, timeUniform, { rate = 1 } = {}) {
     shader.uniforms.uTime = timeUniform;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
-        uniform sampler2D uVat; uniform float uVatVerts; uniform float uVatFrames; uniform float uVatRate; uniform float uTime;
+        uniform highp sampler2D uVat; uniform highp float uVatVerts; uniform highp float uVatFrames; uniform highp float uVatRate; uniform highp float uTime;
         attribute float aPhase;
         vec2 vatUv(float row) { return vec2((float(gl_VertexID) + 0.5) / uVatVerts, (row + 0.5) / (uVatFrames * 2.0)); }`)
       .replace('#include <beginnormal_vertex>', `

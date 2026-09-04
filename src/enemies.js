@@ -65,12 +65,17 @@ export class EnemyManager {
     return { geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }) };
   }
 
-  async loadModels(bossDefs = []) {
+  async loadModels(bossDefs = [], onDone = null) {
     this.bossModels = {};
+    this.modelReport = { ok: [], failed: [] };
+    const report = (name, err) => {
+      if (err) this.modelReport.failed.push(`${name}: ${(err.message || err).toString().slice(0, 60)}`);
+      else this.modelReport.ok.push(name);
+    };
     for (const def of bossDefs) {
       if (!def.model) continue;
-      this.loadModel(def).then((m) => { this.bossModels[def.name] = m; })
-        .catch((err) => console.warn(`Boss model for ${def.name} not loaded, keeping procedural:`, err.message || err));
+      this.loadModel(def).then((m) => { this.bossModels[def.name] = m; report(def.name); })
+        .catch((err) => { console.warn(`Boss model for ${def.name} not loaded, keeping procedural:`, err.message || err); report(def.name, err); });
     }
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       if (!t.model) continue;
@@ -86,10 +91,13 @@ export class EnemyManager {
         this.scene.remove(this.meshes[name]);
         this.scene.add(mesh);
         this.meshes[name] = mesh;
+        report(name);
       } catch (err) {
         console.warn(`Model for ${name} not loaded, keeping procedural:`, err.message || err);
+        report(name, err);
       }
     }
+    onDone?.(this.modelReport);
   }
 
   // Bosses get their own Mesh (not instanced) and drive their own movement via t.ai.

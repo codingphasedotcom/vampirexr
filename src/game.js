@@ -59,7 +59,10 @@ export class Game {
     this.input = new Input(this.renderer, this.rig, this.renderer.domElement);
     this.player = new Player();
     this.enemies = new EnemyManager(this.scene);
-    this.enemies.loadModels(BOSSES);
+    this.enemies.loadModels(BOSSES, (r) => {
+      // surfaced on the HUD so model problems are visible inside the headset, where there is no console
+      this.modelStatus = r.failed.length ? `Models: ${r.ok.length} ok, failed: ${r.failed.join(' | ')}` : `Models loaded (${r.ok.length})`;
+    });
     this.gems = new Gems(this.scene);
     this.particles = new Particles(this.scene);
     this.hud = new Hud(this.camera);
@@ -245,6 +248,7 @@ export class Game {
     this.overlay.classList.add('hidden');
     this.clock.getDelta();
     this.state = 'playing';
+    if (this.modelStatus) this.hud.toast(this.modelStatus, this.modelStatus.includes('failed') ? 8 : 3);
   }
 
   addWeapon(W) { this.weapons.push(new W(this)); }
