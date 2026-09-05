@@ -38,7 +38,7 @@ const _kindColor = new THREE.Color();
 const PLAYER_RADIUS = 0.35;
 
 const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
-<b>Desktop:</b> WASD + mouse, or a gamepad (sticks to move/look, RT to shoot, A to pick, Start to pause). F toggles fullscreen.<br>
+<b>Desktop:</b> WASD + mouse, or a gamepad (A or Start to play, sticks to move/look, RT to shoot, A to pick, Start to pause). F toggles fullscreen.<br>
 <b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
 Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
@@ -387,13 +387,15 @@ export class Game {
     }
     if (!xr) {
       this.input.pollGamepad(dt);
-      if (this.input.consumePadStart()) {
-        if (this.state === 'playing') { this.state = 'paused'; this.showOverlay('PAUSED', 'Press Start or click Resume.', 'Resume'); if (document.pointerLockElement) document.exitPointerLock(); }
-        else if (this.state === 'paused') this.resume();
-        else if (this.state === 'menu' && !this.menu.open) { this.enterFullscreen(); this.start(); }
-      }
-      if (this.state === 'gameover' && this.input.padFace === 0) { this.input.padFace = -1; this.menu.pick(0); }
-      else this.input.padFace = -1;
+      const face = this.input.padFace; this.input.padFace = -1; // A/Cross = 0
+      const start = this.input.consumePadStart();
+      if (start && this.state === 'playing') {
+        this.state = 'paused';
+        this.showOverlay('PAUSED', 'Press Start or A to resume.', 'Resume');
+        if (document.pointerLockElement) document.exitPointerLock();
+      } else if ((start || face === 0) && this.state === 'paused') this.resume();
+      else if ((start || face === 0) && this.state === 'menu' && !this.menu.open) { this.enterFullscreen(); this.start(); }
+      else if (face === 0 && this.state === 'gameover') this.menu.pick(0);
     }
     this.updateMovement(dt, xr);
     if (this.state === 'playing') this.tick(dt);
