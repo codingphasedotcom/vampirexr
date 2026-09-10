@@ -27,6 +27,9 @@ Your revolver is aimed by you; every other weapon fires on its own. Collect the 
 
 ## Structure
 
+Full technical handover: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Agent rules: [CLAUDE.md](CLAUDE.md).
+
+
 - `src/game.js` — loop, state machine, wave director, XR session
 - `src/levels/` — Graveyard (night), Village (day), City (night): sky, lights, ground, props with colliders
 - `src/enemies.js` — instanced enemies with a spatial grid for separation and queries
