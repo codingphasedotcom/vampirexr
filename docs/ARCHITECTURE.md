@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-10 (commit `5bf47d6` era).
+> Last updated: 2026-09-11 (precision shooting and impact feedback).
 
 ## 1. What the game is
 
@@ -214,6 +214,19 @@ module instance than the game (use the DOM selects to change settings).
 
 VR-specific code paths (controller rays, thumbsticks, hand tracking, wrist HUD) cannot be exercised here — the user tests them
 on a Quest via the Vercel URL and reports back.
+
+### Precision combat verification
+
+Verified locally: five Node tests pass; browser ran 120 fixed-timestep frames and a scaled brute took 39 precision damage
+(base 26), with cyan numbers and an active rendered impact. Real Quest/controller paths remain untested.
+
+Run `node --test tests/aim.test.js` for scaled hitboxes, flight bob, precision radius, range, inside-sphere shots,
+behind-camera rejection and dead targets. Gun hit tests live in `src/aim.js`: normalized ray versus a sphere centered at
+`type.y * scale + flight bob`, radius `max(0.4, size * 0.6)`. A ray passing within 45% of the radius earns 1.5× damage,
+including bosses. This is a center-mass precision bonus, not an anatomical headshot. Existing fire rate and piercing apply.
+`Gun` owns 12 reusable world-space impact rings (gold hit, cyan precision, pink kill), fading/expanding over 0.22 seconds;
+they are disposed with the weapon. Precision damage numbers are cyan. No camera shake, XR postprocessing or new assets.
+`Game.hitEnemy` ignores dead targets and positions damage numbers/death bursts at scaled height.
 
 ## 13. Known gaps / ideas not yet done
 

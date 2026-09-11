@@ -37,12 +37,13 @@ const _col = { x: 0, z: 0 };
 const _kindColor = new THREE.Color();
 const PLAYER_RADIUS = 0.35;
 
-const INTRO = `Survive the horde. Weapons fire on their own — you just move.<br><br>
+const INTRO = `Survive the horde. Aim your revolver; your magic weapons fire automatically.<br><br>
 <b>Desktop:</b> WASD + mouse, or a gamepad (A or Start to play, sticks to move/look, RT to shoot, A to pick, Start to pause). F toggles fullscreen.<br>
 <b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
 Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
-Golden light beams mark treasure chests: walk into one for a free upgrade.`;
+Golden light beams mark treasure chests: walk into one for a free upgrade.<br>
+Aim through enemy centers for <b>1.5× precision damage</b>. Cyan impacts confirm precision hits; pink confirms a kill.`;
 
 export class Game {
   constructor() {
@@ -356,15 +357,16 @@ export class Game {
 
   // Central damage entry point so every weapon gets the same feedback (flash, numbers, sfx, gems, particles).
   hitEnemy(e, dmg, opts = {}) {
+    if (e.dead) return;
     const died = this.enemies.damage(e, dmg);
     if (!opts.quiet) this.sfx.hit();
-    this.numbers.spawn(e.x, e.t.y + 0.4, e.z, Math.round(dmg), died ? '#ffd166' : '#ffffff');
+    this.numbers.spawn(e.x, e.t.y * (e.scale ?? 1) + 0.4, e.z, Math.round(dmg), opts.precision ? '#5ffff0' : died ? '#ffd166' : '#ffffff');
     if (died) {
       this.player.kills++;
       this.gems.spawn(e.x, e.z, e.xp ?? e.t.xp);
       if (e.t.boss) { for (let i = 0; i < 3; i++) this.gems.spawnHeal(e.x + rand(-1.5, 1.5), e.z + rand(-1.5, 1.5)); }
       else if (Math.random() < 0.05) this.gems.spawnHeal(e.x, e.z);
-      this.particles.burst(e.x, e.t.y, e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
+      this.particles.burst(e.x, e.t.y * (e.scale ?? 1), e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
       this.sfx.kill();
       if (e.t.boss) {
         this.boss = null;

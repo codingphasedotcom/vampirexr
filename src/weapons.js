@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { rand } from './utils.js';
 import { fxTime } from './fx.js';
+import { traceEnemy } from './aim.js';
 
 const dummy = new THREE.Object3D();
 const BOLT_COLOR = new THREE.Color(0x66d4ff);
@@ -9,7 +10,7 @@ const ZAP_COLOR = new THREE.Color(0xbfe8ff);
 const TRACER_COLOR = new THREE.Color(0xffe08a);
 const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _m = new THREE.Vector3(), _q = new THREE.Quaternion();
 
-// Every weapon auto-fires; the player only moves. Stats scale with level and the player's passives.
+// Passive weapons auto-fire; the revolver uses player aim and trigger input. Stats scale with level and the player's passives.
 // update(dt) runs while playing; draw() runs every frame so visuals persist through the level-up pause.
 export class Weapon {
   static maxLevel = 8;
@@ -333,13 +334,23 @@ export class Gun extends Weapon {
   static damage(l) { return 20 + l * 6; }
   static rate(l) { return 3 + l * 0.3; } // shots per second
   static describe(l) {
-    if (l === 1) return 'Your sidearm. Aim it yourself.';
+    if (l === 1) return 'Aim at enemy centers for 1.5× precision damage.';
     return `${Gun.damage(l)} damage, ${Gun.rate(l).toFixed(1)} shots/s${l >= 5 ? ', pierces' : ''}.`;
   }
 
   constructor(game) {
     super(game);
     this.tracers = [];
+    // Fixed pool: hit confirmation remains world-space and works in both XR eyes.
+    this.impactGeometry = new THREE.RingGeometry(0.7, 1, 16);
+    this.impacts = Array.from({ length: 12 }, () => {
+      const mesh = new THREE.Mesh(this.impactGeometry, new THREE.MeshBasicMaterial({
+        transparent: true, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+      }));
+      mesh.visible = false;
+      game.scene.add(mesh);
+      return { mesh, life: 0 };
+    });
     this.guns = game.input.controllers.map((c) => { const gm = makeGunModel(); c.obj.add(gm); return gm; });
     this.deskGun = makeGunModel();
     this.deskGun.position.set(0.22, -0.2, -0.45);
@@ -376,24 +387,26 @@ export class Gun extends Weapon {
 
   fire(origin, dir, gm) {
     const g = this.game, dmg = this.dmg(Gun.damage(this.level)), pierce = this.level >= 5 ? 3 : 1;
-    // hitscan: ray vs. a sphere around each enemy's centre, nearest first
     const hits = [];
     for (const e of g.enemies.list) {
-      if (e.dead) continue;
-      const ocx = e.x - origin.x, ocy = e.t.y - origin.y, ocz = e.z - origin.z;
-      const tca = ocx * dir.x + ocy * dir.y + ocz * dir.z;
-      if (tca < 0 || tca > 60) continue;
-      const r = Math.max(0.4, e.size * 0.6);
-      const d2 = ocx * ocx + ocy * ocy + ocz * ocz - tca * tca;
-      if (d2 > r * r) continue;
-      hits.push({ e, t: tca - Math.sqrt(r * r - d2) });
+      const hit = traceEnemy(origin, dir, e, g.time);
+      if (hit) hits.push(hit);
     }
     hits.sort((a, b) => a.t - b.t);
     let end = 60;
     for (let i = 0; i < Math.min(pierce, hits.length); i++) {
       const h = hits[i];
-      g.hitEnemy(h.e, dmg);
-      g.particles.burst(origin.x + dir.x * h.t, origin.y + dir.y * h.t, origin.z + dir.z * h.t, 0xffe08a, 6, 3);
+      g.hitEnemy(h.e, dmg * (h.precision ? 1.5 : 1), { precision: h.precision });
+      const color = h.e.dead ? 0xff6b82 : h.precision ? 0x5ffff0 : 0xffe08a;
+      const impact = this.impacts.find(i => i.life <= 0) || this.impacts[0];
+      impact.life = 0.22;
+      impact.mesh.visible = true;
+      impact.mesh.material.color.setHex(color);
+      impact.mesh.position.copy(origin).addScaledVector(dir, Math.max(0.05, h.t - 0.06));
+      impact.mesh.scale.setScalar(0.08);
+      impact.mesh.material.opacity = 1;
+      g.camera.getWorldQuaternion(impact.mesh.quaternion);
+      g.particles.burst(origin.x + dir.x * h.t, origin.y + dir.y * h.t, origin.z + dir.z * h.t, color, h.precision ? 10 : 6, 3);
       end = h.t + 0.3;
     }
     gm.muzzle.getWorldPosition(_m);
@@ -405,6 +418,14 @@ export class Gun extends Weapon {
 
   draw(dt) {
     const g = this.game, xr = g.renderer.xr.isPresenting, glow = g.glow;
+    for (const impact of this.impacts) {
+      impact.life = Math.max(0, impact.life - dt);
+      impact.mesh.visible = impact.life > 0;
+      if (!impact.mesh.visible) continue;
+      impact.mesh.material.opacity = impact.life / 0.22;
+      impact.mesh.scale.setScalar(0.08 + (1 - impact.life / 0.22) * 0.16);
+      g.camera.getWorldQuaternion(impact.mesh.quaternion);
+    }
     this.deskGun.visible = !xr;
     for (let i = 0; i < this.guns.length; i++) this.guns[i].visible = xr && !!g.input.controllers[i].source;
     for (const gm of [...this.guns, this.deskGun]) {
@@ -428,6 +449,11 @@ export class Gun extends Weapon {
   }
 
   dispose() {
+    for (const impact of this.impacts) {
+      this.game.scene.remove(impact.mesh);
+      impact.mesh.material.dispose();
+    }
+    this.impactGeometry.dispose();
     for (const gm of this.guns) gm.parent?.remove(gm);
     this.game.camera.remove(this.deskGun);
   }
