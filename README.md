@@ -25,6 +25,8 @@ WebXR needs a secure context, so `dev:vr` serves over HTTPS with a self-signed c
 Your revolver is aimed by you; every other weapon fires on its own. Aim through the center of an enemy for **1.5× precision damage**. Impact rings confirm hits: gold for a hit, cyan for precision, pink for a kill. Collect the gems enemies drop to level up.
 25 waves, starting at 30 monsters and growing ~28% per wave (max 200 alive). Bosses on waves 4, 8, 12, 17 and 25; kill the Vampire Lord on wave 25 to win. Golden beams mark chests that give a free upgrade.
 
+Walking enemies now blend smoothly between animation poses, with faster playback that adjusts to movement speed.
+
 ## Castle Siege
 
 Choose **Castle Siege (adventure)** from the **Level** selector before playing. In VR, cycle the Level card to Castle Siege.

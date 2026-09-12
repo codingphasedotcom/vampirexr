@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-11 (Castle Siege adventure mode and top-right radar).
+> Last updated: 2026-09-11 (movement-driven, interpolated model animation).
 
 ## 1. What the game is
 
@@ -177,7 +177,7 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   procedural FLAP/WAVE vertex animation (`tagForShaderAnim`).
 - Meshopt-compressed GLBs have **Int16 quantized attributes**: convert with `toFloat()` before any transform.
 - `normalizeRoot` rescales to `height`, centres x/z, feet at y = 0; `lift` raises flyers (applied to geometry / baked positions).
-- Bosses clone the loaded geometry and share the material; flash via `emissive`.
+- Bosses clone the loaded geometry. Animated bosses have a private VAT material and clock; static bosses share the loaded material. Flash uses `emissive`. Private materials and boss geometry are disposed on death/restart.
 
 ## 10. HUD, menus, art
 
@@ -272,3 +272,18 @@ Validation: `node --test tests/*.test.js` passes nine tests covering aim, room b
 The local browser test drove fixed-dt `game.loop()` across all rooms with scripted lethal damage, confirmed victory/restart,
 and inspected the rendered castle. This verifies progression, not combat balance. Real Quest inputs, comfort and performance
 still require headset testing. Future work: richer room-specific objectives, side chambers, and balance tuning from playtests.
+
+
+## 15. Animation playback (`src/animation.js`, `models.js`, `enemies.js`)
+
+VAT retains 24 baked poses but now interpolates both positions and normals between adjacent frames, wrapping the last frame
+to the first. Vertex samplers remain `highp`. This uses four texture reads per vertex instead of two, without adding draw
+calls or texture memory. Instanced enemies carry an `aWalkTime` attribute; animated bosses receive their own time uniform.
+`advanceWalk` accumulates time from actual displacement relative to `type.speed * scale`, smooths cadence changes, clamps
+movement rate to 0.2–2, and ignores teleport-sized displacements. Standing creatures retain a slow walk-cycle idle because
+these assets have no separate idle/attack clips. This reduces sliding; it is not foot planting or root-motion matching.
+
+Playback multipliers relative to source clips: ghoul 1.8, brute 1.9, golem 1.5, necromancer 1.8, butcher 1.8, vampire 1.7.
+Static bats/wraiths and procedural fallbacks keep their existing shader motion. Game pauses stop movement clocks.
+`tests/animation.test.js` checks distance tracking, frame-rate independence, idle cadence, size compensation and teleports.
+Browser verification loaded all ten models and rendered 120 fixed-dt frames of blended horde and boss animation with no console errors. All 12 Node tests and production build pass. Quest GPU cost/comfort must still be checked on-device.

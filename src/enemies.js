@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { advanceWalk } from './animation.js';
 import { batGeometry, ghoulGeometry, wraithGeometry, bruteGeometry, creatureMaterial, tagForShaderAnim, enemyTime } from './creatures.js';
 import { loadVATModel, vatMaterial, loadStaticModel } from './models.js';
 
@@ -9,13 +10,13 @@ export const ENEMY_TYPES = {
             model: { url: '/models/bat.glb', height: 0.5, lift: 1.1, yaw: 0, animated: false } },
   ghoul:  { hp: 22,  speed: 2.1, dmg: 6,  size: 0.8,  y: 1.0,  color: 0x7fd36a, xp: 2,
             build: ghoulGeometry, anim: ['SHAMBLE', { speed: 7, hip: 0.55 }],
-            model: { url: '/models/ghoul.glb', height: 1.7, yaw: 0, rate: 1.0 } },
+            model: { url: '/models/ghoul.glb', height: 1.7, yaw: 0, rate: 1.8 } },
   wraith: { hp: 40,  speed: 2.8, dmg: 9,  size: 0.9,  y: 1.3,  color: 0x7ff3ff, xp: 4, fly: true,
             build: wraithGeometry, anim: ['WAVE'],
             model: { url: '/models/wraith.glb', height: 1.9, lift: 0.25, yaw: 0, animated: false } },
   brute:  { hp: 130, speed: 1.4, dmg: 16, size: 1.5,  y: 1.4,  color: 0xff4d5a, xp: 8,
             build: bruteGeometry, anim: ['SHAMBLE', { speed: 4.5, hip: 0.6 }],
-            model: { url: '/models/brute.glb', height: 2.4, yaw: 0, rate: 0.9 } },
+            model: { url: '/models/brute.glb', height: 2.4, yaw: 0, rate: 1.9 } },
 };
 const MAX = { bat: 320, ghoul: 220, wraith: 120, brute: 60 };
 const CELL = 2;
@@ -36,12 +37,15 @@ export class EnemyManager {
     this.list = [];
     this.meshes = {};
     this.phases = {};
+    this.walkTimes = {};
     this.counts = {};
     this.grid = new Map();
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       const geo = t.build();
       const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX[name]), 1).setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute('aPhase', phase);
+      this.walkTimes[name] = new THREE.InstancedBufferAttribute(new Float32Array(MAX[name]), 1).setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('aWalkTime', this.walkTimes[name]);
       const mesh = new THREE.InstancedMesh(geo, creatureMaterial(t.anim[0], t.anim[1]), MAX[name]);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       mesh.frustumCulled = false;
@@ -69,7 +73,7 @@ export class EnemyManager {
       return { geometry: m.geometry, material: creatureMaterial(t.anim[0], t.anim[1], m.map) };
     }
     const vat = await loadVATModel(t.model.url, t.model);
-    return { geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }) };
+    return { vat, geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }) };
   }
 
   async loadModels(bossDefs = [], onDone = null) {
@@ -89,6 +93,7 @@ export class EnemyManager {
       try {
         const { geometry, material } = await this.loadModel(t);
         geometry.setAttribute('aPhase', this.phases[name]);
+        geometry.setAttribute('aWalkTime', this.walkTimes[name]);
         const mesh = new THREE.InstancedMesh(geometry, material, MAX[name]);
         mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         mesh.frustumCulled = false;
@@ -110,21 +115,23 @@ export class EnemyManager {
   // Bosses get their own Mesh (not instanced) and drive their own movement via t.ai.
   spawnBoss(def, x, z, hpMul = 1) {
     let geo, material;
+    const walkClock = { value: 0 };
     const loaded = this.bossModels?.[def.name];
     if (loaded) {
       geo = loaded.geometry.clone();
-      material = loaded.material;
+      material = loaded.vat ? vatMaterial(loaded.vat, walkClock, { rate: def.model.rate }) : loaded.material;
     } else {
       geo = def.build();
       material = creatureMaterial(def.anim[0], def.anim[1]);
     }
     geo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
     const mesh = new THREE.Mesh(geo, material);
+    mesh.userData.ownsMaterial = !!loaded?.vat;
     mesh.frustumCulled = false;
     this.scene.add(mesh);
     const t = { ...def, boss: true };
     const hp = def.hp * hpMul;
-    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, s: {}, dmgMul: 1 };
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1 };
     this.list.push(e);
     this.counts.boss++;
     return e;
@@ -140,7 +147,7 @@ export class EnemyManager {
     const k = KINDS[kind];
     const tint = k.tint ? k.tint.clone() : new THREE.Color().setHSL(Math.random(), 0.5, 0.5).lerp(new THREE.Color(1, 1, 1), 0.7);
     const e = {
-      type, t, x, z, kind, scale, tint,
+      type, t, x, z, kind, scale, tint, walkX: x, walkZ: z,
       size: t.size * scale,
       speed: t.speed * (1.25 - 0.25 * scale), // small ones are quick, giants lumber
       hp: t.hp * hpMul * Math.pow(scale, 1.5),
@@ -195,7 +202,7 @@ export class EnemyManager {
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
-      if (e.dead) { this.counts[e.type]--; if (e.mesh) this.scene.remove(e.mesh); }
+      if (e.dead) { this.counts[e.type]--; if (e.mesh) { this.scene.remove(e.mesh); e.mesh.geometry.dispose(); if (e.mesh.userData.ownsMaterial) e.mesh.material.dispose(); } }
       else this.list[w++] = e;
     }
     this.list.length = w;
@@ -256,7 +263,9 @@ export class EnemyManager {
     const idx = {};
     for (const n in this.meshes) idx[n] = 0;
     for (const e of this.list) {
+      const walkTime = advanceWalk(e, dt);
       if (e.mesh) {
+        e.walkClock.value = walkTime;
         e.mesh.position.set(e.x, e.t.fly ? Math.sin(time * 3 + e.phase) * 0.3 : 0, e.z);
         e.mesh.rotation.y = Math.atan2(px - e.x, pz - e.z);
         e.mesh.material.emissive.setScalar(e.flash * 0.8);
@@ -272,6 +281,7 @@ export class EnemyManager {
       m.setMatrixAt(i, dummy.matrix);
       m.setColorAt(i, _c.copy(e.tint).multiplyScalar(1 + e.flash * 3));
       this.phases[e.type].array[i] = e.phase;
+      this.walkTimes[e.type].array[i] = walkTime;
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
     }
     for (const n in this.meshes) {
@@ -280,12 +290,13 @@ export class EnemyManager {
       m.instanceMatrix.needsUpdate = true;
       m.instanceColor.needsUpdate = true;
       this.phases[n].needsUpdate = true;
+      this.walkTimes[n].needsUpdate = true;
     }
     return contact;
   }
 
   reset() {
-    for (const e of this.list) if (e.mesh) this.scene.remove(e.mesh);
+    for (const e of this.list) if (e.mesh) { this.scene.remove(e.mesh); e.mesh.geometry.dispose(); if (e.mesh.userData.ownsMaterial) e.mesh.material.dispose(); }
     this.list.length = 0;
     this.grid.clear();
     for (const n in this.meshes) { this.counts[n] = 0; this.meshes[n].count = 0; }

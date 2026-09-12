@@ -154,7 +154,7 @@ export function staticMaterial(model, timeUniform) {
 // Lambert material that reads positions/normals from the VAT with a per-instance phase (aPhase, in cycles).
 export function vatMaterial(vat, timeUniform, { rate = 1 } = {}) {
   const mat = new THREE.MeshLambertMaterial({ map: vat.map, color: 0xffffff });
-  mat.customProgramCacheKey = () => 'vat';
+  mat.customProgramCacheKey = () => 'vat-blended-walk';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uVat = { value: vat.texture };
     shader.uniforms.uVatVerts = { value: vat.verts };
@@ -165,11 +165,23 @@ export function vatMaterial(vat, timeUniform, { rate = 1 } = {}) {
       .replace('#include <common>', `#include <common>
         uniform highp sampler2D uVat; uniform highp float uVatVerts; uniform highp float uVatFrames; uniform highp float uVatRate; uniform highp float uTime;
         attribute float aPhase;
+        #ifdef USE_INSTANCING
+          attribute float aWalkTime;
+        #endif
         vec2 vatUv(float row) { return vec2((float(gl_VertexID) + 0.5) / uVatVerts, (row + 0.5) / (uVatFrames * 2.0)); }`)
       .replace('#include <beginnormal_vertex>', `
-        float vatFrame = floor(fract(uTime * uVatRate + aPhase) * uVatFrames);
-        vec3 objectNormal = texture2D(uVat, vatUv(uVatFrames + vatFrame)).xyz;`)
-      .replace('#include <begin_vertex>', 'vec3 transformed = texture2D(uVat, vatUv(vatFrame)).xyz;');
+        #ifdef USE_INSTANCING
+          float clipTime = aWalkTime;
+        #else
+          float clipTime = uTime;
+        #endif
+        float framePosition = fract(clipTime * uVatRate + aPhase) * uVatFrames;
+        float vatFrame = floor(framePosition);
+        float nextFrame = mod(vatFrame + 1.0, uVatFrames);
+        float blend = fract(framePosition);
+        vec3 objectNormal = normalize(mix(texture2D(uVat, vatUv(uVatFrames + vatFrame)).xyz,
+          texture2D(uVat, vatUv(uVatFrames + nextFrame)).xyz, blend));`)
+      .replace('#include <begin_vertex>', 'vec3 transformed = mix(texture2D(uVat, vatUv(vatFrame)).xyz, texture2D(uVat, vatUv(nextFrame)).xyz, blend);');
   };
   return mat;
 }
