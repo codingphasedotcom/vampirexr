@@ -20,6 +20,7 @@ import { World } from './world.js';
 import { LEVELS, levelById } from './levels/index.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
 import { rand, fmtTime } from './utils.js';
+import { CastleSiege, confine } from './siege.js';
 import { settings, saveSettings } from './settings.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -42,6 +43,7 @@ const INTRO = `Survive the horde. Aim your revolver; your magic weapons fire aut
 <b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
 <b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
 Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
+Choose <b>Castle Siege</b> in Level for a four-room castle assault with unlockable gates and a throne-room boss.<br>
 Golden light beams mark treasure chests: walk into one for a free upgrade.<br>
 Aim through enemy centers for <b>1.5× precision damage</b>. Cyan impacts confirm precision hits; pink confirms a kill.`;
 
@@ -186,7 +188,7 @@ export class Game {
     this.state = 'menu';
     const level = levelById(settings.level);
     this.menu.show('', 'Point at a card and pull the trigger (or pinch)', [
-      { kind: 'weapon', title: 'Start', sub: 'Play', desc: 'Survive 25 waves. Weapons fire on their own; you aim the revolver.', apply: () => this.start() },
+      { kind: 'weapon', title: 'Start', sub: 'Play', desc: level.id === 'castle' ? 'Clear four rooms, claim treasure, and slay the Vampire Lord.' : 'Survive 25 waves. Aim the revolver; magic fires automatically.', apply: () => this.start() },
       { kind: 'bonus', title: `Level: ${level.name}`, sub: 'Select', desc: level.desc, apply: () => { this.cycleLevel(); this.applyLevelLook(); this.showVrMenu(); } },
       { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
     ], (item) => item.apply(), true, { logo: true, art: true });
@@ -284,6 +286,8 @@ export class Game {
     this.sfx.init();
     this.applyLevelLook();
     this.player.reset();
+    this.siege = this.world.level.id === 'castle' ? new CastleSiege(this) : null;
+    this.world.ambient?.reset?.();
     this.enemies.reset();
     this.gems.reset();
     this.bossFx.reset();
@@ -462,6 +466,11 @@ export class Game {
     const h = this.headPos();
     this.world.colliders.resolve(h.x, h.z, PLAYER_RADIUS, _col);
     if (_col.x !== h.x || _col.z !== h.z) { this.rig.position.x += _col.x - h.x; this.rig.position.z += _col.z - h.z; this.headPos(); }
+    if (this.siege) {
+      const limited = this.siege.constrainPlayer(_col.x, _col.z);
+      this.rig.position.x += limited.x - _col.x; this.rig.position.z += limited.z - _col.z;
+      _col.x = limited.x; _col.z = limited.z;
+    }
     this.player.pos.set(_col.x, 0, _col.z);
     this.hud.setComfort(xr && settings.vignette ? Math.min(1, moving * 0.85 + turning * 0.9) : 0);
   }
@@ -492,8 +501,10 @@ export class Game {
   tick(dt) {
     const p = this.player;
     this.time += dt;
-    this.spawnDirector(dt);
+    if (this.siege) this.siege.update(dt);
+    else this.spawnDirector(dt);
     if (this.boss) this.boss.t.ai(this.boss, dt, this);
+    if (this.siege) for (const e of this.enemies.list) confine(e, Math.max(0, this.siege.index));
     const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders, (e, k) => {
       const dx = p.pos.x - e.x, dz = p.pos.z - e.z, d = Math.hypot(dx, dz) || 1;
       this.bossFx.shoot(e.x, e.z, dx / d * k.speed, dz / d * k.speed, k.dmg * this.hpMul * 0.5, k.color, k.effect);
@@ -532,6 +543,7 @@ export class Game {
   }
 
   waveInfo() {
+    if (this.siege) return this.siege.info();
     const remaining = Math.max(0, this.waveTotal - this.waveSpawned) + this.enemies.alive;
     return { wave: this.wave, total: WAVES, remaining, brk: this.waveBreak > 0 };
   }

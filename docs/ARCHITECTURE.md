@@ -2,13 +2,13 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-11 (precision shooting and impact feedback).
+> Last updated: 2026-09-11 (Castle Siege adventure mode and top-right radar).
 
 ## 1. What the game is
 
 A Vampire Survivors–style horde survival game built with **Three.js (r185) + WebXR**, playable in a **VR headset** (Quest,
 controllers or hand tracking), on **desktop** (keyboard+mouse or gamepad), with an anime art style. 25 waves, five bosses,
-auto-firing weapons plus a player-aimed revolver, level-ups, chests, three levels. No backend, no build-time codegen: Vite +
+auto-firing weapons plus a player-aimed revolver, level-ups, chests, three survival levels and Castle Siege. No backend, no build-time codegen: Vite +
 vanilla ES modules.
 
 - **Live site:** https://vampirexr.vercel.app (Vercel auto-deploys `main` of `github.com/codingphasedotcom/vampirexr`).
@@ -43,7 +43,7 @@ src/chests.js         treasure chests with light beams (walk-in → free random 
 src/world.js          Colliders (grid of circles/segments), World (sky/fog/lights/ground/clouds from a level def), Drifters
 src/levels/*.js       graveyard (night), village (day), city (night) — props with colliders; index.js exports LEVELS
 src/hud.js            camera-locked or wrist HUD canvas, boss bar, toasts, hurt vignette, comfort vignette
-src/minimap.js        radar (forward-up), camera-fixed bottom-right
+src/minimap.js        radar (forward-up), camera-fixed top-right
 src/menu.js           world-space card menu (VR ray/pinch, desktop gaze+click/keys/gamepad), logo + key art dressing
 src/fx.js             GlowLayer (immediate-mode additive point sprites), DamageNumbers, glowTexture, fxTime
 src/particles.js      pooled additive particles (death bursts, hits)
@@ -185,14 +185,15 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   toasts replace the bottom line. VR `settings.hud`: `wrist` (panel floats 12 cm above the off-hand, faces the head; a slim
   camera-locked "alerts" strip keeps boss HP + toasts) or `camera` (fixed at bottom of view). Hurt vignette and comfort vignette
   (peripheral darkening while moving/turning in VR) are camera children.
-- `Minimap`: 256 px canvas, 32 m range, forward-up (`ctx.rotate(+yaw)` — sign matters), camera-fixed at (0.46, −0.27, −0.9).
+- `Minimap`: 256 px canvas, 32 m range, forward-up (`ctx.rotate(+yaw)` — sign matters), top-right: desktop uses camera FOV/aspect with 0.13 m edge inset; XR uses (0.4, 0.28, −0.9).
+  Dead enemies are filtered; healing orbs are red; FRONT marks the forward-up orientation.
 - Title screen: `index.html` overlay with `img#logo` (`mix-blend-mode: screen`) over `keyart.jpg`; scrollable on phones.
   VR main menu shows the logo (alpha-keyed from black at runtime) above cards with the key art behind.
 
 ## 11. Settings
 
 `settings.js` → localStorage. Keys: `turn` (`smooth|snap`), `turnSpeed` (deg/s), `vignette` (bool), `hud` (`wrist|camera`),
-`level` (`graveyard|village|city`). Editable from the title-screen selects and the in-VR Settings cards.
+`level` (`graveyard|village|city|castle`). Editable from the title-screen selects and the in-VR Settings cards.
 
 ## 12. Testing without a headset (important)
 
@@ -232,6 +233,42 @@ they are disposed with the weapon. Precision damage numbers are cyan. No camera 
 
 - No touch controls (phones can view the title page only).
 - No audio assets/music (oscillator SFX only). No haptics in VR (gamepad rumble only).
-- The Butcher boss is unscheduled since bosses moved to waves 4/8/12/17/25.
+- The Butcher appears in Castle Siege; it is still unscheduled in survival.
 - No meta-progression, weapon evolutions, or run summary screen.
 - Balance numbers (§5) were tuned with a headless bot, not with real VR play.
+
+
+## 14. Castle Siege (`src/siege.js`, `src/levels/castle.js`)
+
+Select **Castle Siege (adventure)** in the desktop Level selector, or cycle the VR Level card to Castle Siege.
+This selection replaces the survival wave director with `CastleSiege.update(dt)`; the original three levels retain 25 waves.
+Room centers are z=0, -22, -44, -66 along a straight northbound route; all navigation stays on flat ground for VR comfort.
+
+| Room | Enemies | HP multiplier | Composition tier / caster chance | Guardian |
+|---|---:|---:|---|---|
+| Courtyard | 30 | 1 | 2 / 0% | None |
+| Banquet Hall | 48 | 1.5 | 5 / 12% | None |
+| Dungeon | 65 | 2 | 8 / 20% | The Butcher (2,000 HP) |
+| Throne Room | 80 | 2.6 | 11 / 25% | Vampire Lord (4,900 HP) |
+
+A two-second entry grace period precedes spawning at 2/3/4/5 enemies per second in clear side lanes. No timeout or straggler
+skip: every enemy must die. Dungeon/throne guardians appear only after their horde is cleared. Boss summons count toward
+the encounter; the Vampire Lord retains its immediate-on-death victory rule. Existing XP, upgrades, gun precision and
+health drops remain active. Each of the first three clears spawns one chest and two red healing orbs near the exit.
+Collect them before proceeding: the previous gate seals behind you. Rewards use the existing random-upgrade chest system.
+
+`CastleSiege` owns room index, spawn budget, guardian state, progression, and objective text. `roomBounds`/`confine` keep
+boss teleports and summons within the encounter. The player is constrained to the active room until cleared; crossing the
+center doorway starts the next room. `World.ambient.setGate` raises the portcullis and toggles its collider's `disabled`
+flag (`Colliders.resolve` skips disabled entries). Restart calls the level's `reset` and creates a fresh director. Switching
+levels still calls `World.dispose()`. Static architecture/furniture uses one colored InstancedMesh; torch flames use one
+more. Gate meshes are a fixed small set. No purchased/generated assets or XR postprocessing were added.
+
+HUD shows room name and objective instead of wave text. Castle radar draws wall/collider segments and marks the exit red
+while locked or green when cleared. Common enemy spawning now checks a 200-live-enemy cap, including boss summons; siege
+streaming leaves a slot free. Spawn lanes avoid banquet tables and courtyard ornament collision.
+
+Validation: `node --test tests/*.test.js` passes nine tests covering aim, room budgets, guardian ordering, gate transitions, bounds, and front/behind/right radar positions at all four cardinal headings.
+The local browser test drove fixed-dt `game.loop()` across all rooms with scripted lethal damage, confirmed victory/restart,
+and inspected the rendered castle. This verifies progression, not combat balance. Real Quest inputs, comfort and performance
+still require headset testing. Future work: richer room-specific objectives, side chambers, and balance tuning from playtests.

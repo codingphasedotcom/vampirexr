@@ -38,6 +38,7 @@ export class Colliders {
     const a = this.grid.get(ckey(Math.floor(x / CELL), Math.floor(z / CELL)));
     if (!a) return out;
     for (const c of a) {
+      if (c.disabled) continue;
       let nx, nz, d, min;
       if (c.x1 !== undefined) {
         const ex = c.x2 - c.x1, ez = c.z2 - c.z1, len2 = ex * ex + ez * ez || 1;

@@ -132,7 +132,7 @@ export class EnemyManager {
 
   // `casterChance` (0–1) is the share of spawns that become fire/ice casters; bosses summon with 0.
   spawn(type, x, z, hpMul = 1, casterChance = 0) {
-    if (this.counts[type] >= MAX[type]) return null;
+    if (this.list.filter(e => !e.dead).length >= 200 || this.counts[type] >= MAX[type]) return null;
     const t = ENEMY_TYPES[type];
     const r = Math.random();
     const scale = r < 0.06 ? 1.7 : 0.75 + Math.random() * 0.6; // rare giants, otherwise 0.75–1.35

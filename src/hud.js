@@ -154,9 +154,9 @@ export class Hud {
       if (wave && wave.wave > 0) {
         g.textAlign = 'center';
         g.fillStyle = wave.brk ? '#ffd166' : '#fff';
-        g.fillText(`WAVE ${wave.wave}/${wave.total}`, 256, oy + 96);
+        g.fillText(wave.label ? `${wave.wave}/${wave.total} ${wave.label}` : `WAVE ${wave.wave}/${wave.total}`, 256, oy + 96);
         g.font = '16px system-ui, sans-serif'; g.fillStyle = '#bbb';
-        g.fillText(wave.brk ? 'next wave incoming' : `${wave.remaining} left · ${fmtTime(time)}`, 256, oy + 124);
+        g.fillText(wave.objective ? `${wave.objective}${wave.brk ? '' : ` · ${wave.remaining} left`}` : wave.brk ? 'next wave incoming' : `${wave.remaining} left · ${fmtTime(time)}`, 256, oy + 124);
       } else {
         g.textAlign = 'center'; g.fillText(fmtTime(time), 256, oy + 106);
       }

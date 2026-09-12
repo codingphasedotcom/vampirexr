@@ -25,6 +25,14 @@ WebXR needs a secure context, so `dev:vr` serves over HTTPS with a self-signed c
 Your revolver is aimed by you; every other weapon fires on its own. Aim through the center of an enemy for **1.5× precision damage**. Impact rings confirm hits: gold for a hit, cyan for precision, pink for a kill. Collect the gems enemies drop to level up.
 25 waves, starting at 30 monsters and growing ~28% per wave (max 200 alive). Bosses on waves 4, 8, 12, 17 and 25; kill the Vampire Lord on wave 25 to win. Golden beams mark chests that give a free upgrade.
 
+## Castle Siege
+
+Choose **Castle Siege (adventure)** from the **Level** selector before playing. In VR, cycle the Level card to Castle Siege.
+Fight through the Courtyard, Banquet Hall, Dungeon, and Throne Room. Clear every enemy to raise the next gate; collect your
+reward chest and two healing orbs before moving on. The gate closes behind you when you enter the next room.
+The Butcher guards the dungeon; defeat the Vampire Lord in the throne room to win. Room objectives and colored gate markers
+on the top-right minimap guide the route. The radar rotates with your view: enemies above its player arrow are in front of you; red pickup dots mark healing orbs. The other three levels still use the original 25-wave survival mode.
+
 ## Structure
 
 Full technical handover: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Agent rules: [CLAUDE.md](CLAUDE.md).
