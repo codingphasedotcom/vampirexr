@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-11 (movement-driven, interpolated model animation).
+> Last updated: 2026-09-23 (anime graphics overhaul, dash, evolutions, music, console title screen).
 
 ## 1. What the game is
 
@@ -19,7 +19,7 @@ vanilla ES modules.
 ## 2. Repository map
 
 ```
-index.html            Title overlay (logo, key art, Play, Enter VR, Fullscreen, settings selects), crosshair div
+index.html            #title (built by src/title.js), #overlay (in-game pause only), crosshair, all front-end CSS
 vite.config.js        basic-ssl only when SSL=1
 scripts/optimize-glb.sh   gltf-transform: 1K WebP textures + meshopt → public/models/*.glb (~300 KB each)
 public/models/*.glb   10 AI-generated anime models (see §9)
@@ -29,7 +29,11 @@ CLAUDE.md             working rules for AI agents (deploy, testing, docs)
 
 src/main.js           creates `new Game()` and exposes `window.game` (used for headless testing)
 src/game.js           THE orchestrator: renderer/XR setup, state machine, wave director, menus, damage routing, per-frame loop
-src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level
+src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level, music
+src/title.js          console-style desktop front end: splash, main menu, battlefield preview, settings, how-to (keys/mouse/gamepad)
+src/toon.js           cel-shading ramp, rim light, ink outlines (`toonShader`, `makeOutline`), stepped matcap for the revolver
+src/shadows.js        BlobShadows: one instanced draw of soft discs under creatures, chests and the player
+src/music.js          procedural soundtrack (Am–F–Dm–E), layers scale with `intensity`
 src/input.js          keyboard/mouse, XR controllers + hands (arm-swing locomotion), desktop gamepad
 src/player.js         HP/XP/level/stats/passives; MAX_LEVEL = 30
 src/enemies.js        ENEMY_TYPES, KINDS (fire/ice), EnemyManager (instanced horde + boss meshes, grid, movement, contact dmg)
@@ -47,7 +51,7 @@ src/minimap.js        radar (forward-up), camera-fixed top-right
 src/menu.js           world-space card menu (VR ray/pinch, desktop gaze+click/keys/gamepad), logo + key art dressing
 src/fx.js             GlowLayer (immediate-mode additive point sprites), DamageNumbers, glowTexture, fxTime
 src/particles.js      pooled additive particles (death bursts, hits)
-src/sfx.js            WebAudio oscillator SFX (no audio assets)
+src/sfx.js            WebAudio SFX: oscillators + filtered noise through a limiter (no audio assets)
 src/utils.js          rand/clamp/pick/shuffle/fmtTime/canvas helpers
 ```
 
@@ -58,12 +62,16 @@ src/utils.js          rand/clamp/pick/shuffle/fmtTime/canvas helpers
 Per frame (`loop()`):
 1. `fxTime += dt` (wall clock for ambient shaders; `this.time` is *game* time and only advances while `playing`).
 2. `glow.begin()` — every glow consumer pushes points during the frame; `glow.end()` uploads once.
-3. VR: X/Y/A/B pause toggle. Desktop: `input.pollGamepad(dt)`; Start/A start/pause/resume; A restarts on game over.
+3. VR: X/Y/A/B pause toggle, grip = dash. Desktop: `input.pollGamepad(dt)`; while the title is visible gamepad `uiEvents`
+   (up/down/left/right/accept/back/any) go to `title.action()`; otherwise Start pause, A resume/restart, B dash. Music intensity
+   eases toward 0.15 (menu) … 1.0 (boss + full horde).
 4. `updateMovement(dt, xr)` — rig movement, turning, prop collision, comfort vignette, `player.pos` (head projected to floor).
 5. If `playing` → `tick(dt)`; else if a menu is open → `menu.update(xr)`.
 6. Always: weapon `draw()`, gems/chests draw, caster glows, particles, damage numbers, world ambience, player light, HUD,
    minimap, wrist anchor (VR).
-7. Render: `composer.render()` on desktop (RenderPass → UnrealBloomPass → OutputPass), `renderer.render()` in XR (no bloom).
+7. Render: XR → `renderer.render()` (no post). Desktop → skipped while the title covers the canvas, else camera shake then
+   `composer.render()`: RenderPass into a 4× MSAA half-float target → OutputPass → GradeShader (saturation, contrast, level tint,
+   vignette, red chromatic pulse when hurt, faint grain). **No bloom** (removed at the user's request).
 
 `tick(dt)`: time → `spawnDirector` → boss AI → `enemies.update` (returns contact damage) → weapons `update` → `bossFx.update`
 → gems → chests → regen → contact damage (rumble/vignette throttled) → death check → victory check → level-up check.
@@ -85,6 +93,9 @@ Menus are the same `Menu` class everywhere: `menu.show(title, sub, items, onPick
 - **Collision:** `world.colliders.resolve(x, z, PLAYER_RADIUS=0.35)` pushes the head out of props and shifts the rig by the delta.
   Ground enemies use the same resolver (flyers ignore it). Arena is clamped to radius 90.
 - **Slow effect:** ice projectiles set `slowUntil = time + 2` → movement × 0.55.
+- **Dash** (`tryDash`, `DASH` constant): Shift / gamepad B / VR grip. 22 m/s for 0.2 s (~4.5 m) along the last move direction (or
+  facing), 0.45 s invulnerability (`invulnUntil` gates contact damage and `damagePlayer`), 1.6 s cooldown shown as a cyan bar
+  under the XP bar. Desktop-only camera shake (`addShake`) on hits; never in XR.
 
 ## 5. Waves, difficulty, bosses (`game.js` top constants)
 
@@ -127,6 +138,11 @@ per-instance `aPhase`. Returns contact damage (`t.dmg · dmgMul · dt` for enemi
 
 Bosses are single `Mesh`es (`spawnBoss`) in the same list with `t.boss = true`; flash uses `material.emissive`.
 
+**Look:** every type has an ink-outline companion `InstancedMesh` sharing the instance buffers (`setTypeMesh`); outlines are
+hidden in XR (`outlinesVisible`) to stay inside the Quest vertex budget, bosses keep theirs (child mesh). New spawns rise out of
+the ground with an overshoot (`age`); killed enemies move to `this.dying` for a 0.42 s flash-swell-crumple (1.4 s for bosses)
+before disappearing — they are no longer in `list`, so targeting and counts ignore them. `drawShadows()` feeds `BlobShadows`.
+
 ## 7. Weapons & upgrades
 
 All weapons extend `Weapon` (`weapons.js`): `update(dt)` while playing, `draw(dt)` every frame, `dispose()`. Helpers `cd()`,
@@ -144,13 +160,21 @@ Passives (`upgrades.js`, max 5 each): Might +15% dmg, Haste ×0.9 cooldown, Vigo
 Magnet +1 m, Reach +12% area, Regeneration +0.6 HP/s, Armor −8% damage taken. `getChoices(game)` builds 3 random cards from
 unowned weapons (NEW), upgradable weapons, and non-maxed passives, padding with "Roast Chicken" (heal 30).
 
-All damage goes through `game.hitEnemy(e, dmg, {quiet})` → flash, damage number, sfx, kill handling (gems, orbs, particles,
-boss bookkeeping, victory).
+**Evolutions:** each weapon has `static evolution = { passive, title, desc }`. A maxed weapon (level 8) plus its passive at
+level ≥ 1 puts an `evolve` card first in `getChoices()` (chests grant it outright). `weapon.evolve()` sets `evolved`:
+Gun + Haste → Hellfire Repeater (2× rate, +30%, pierce 8, red tracers); Wand + Might → Arcane Storm (8 homing bolts, +50%,
+pierce 4); Orbs + Reach → Seraph Halo (12 orbs, 1.4× radius, faster, +60%); Aura + Armor → Sanctuary (1.5× radius, +50%,
+heals 0.5 per enemy burned, max 4/tick); Lightning + Swiftness → Tempest (half cooldown, each strike chains to 3 foes at 70%).
+
+All damage goes through `game.hitEnemy(e, dmg, {quiet, precision, src})` → flash, damage number, sfx, kill handling (gems,
+orbs, particles, boss bookkeeping, victory). `src` accumulates `game.stats.damage[weaponId]` for the Run Stats card on the
+game-over / victory screen (Try Again · Run Stats (disabled card) · Main Menu).
 
 ## 8. Levels & world (`world.js`, `levels/`)
 
 A level def provides: `sky {top, horizon}`, `fog {color, density}`, `hemi`, `key`, optional `rim` lights, optional `celestial`
-(moon/sun + halo), `stars`, `clouds`, `bloom {strength, threshold}`, `playerLight` intensity, `ground()` texture factory, and
+(moon/sun + halo), `stars`, `clouds`, optional `groundFog {color, opacity, height}`, `rimLight {color, strength}`,
+optional `groundVariation`, `playerLight` intensity, `ground()` texture factory, and
 `build(group, colliders)` which adds props and returns an optional `{update(dt, time, playerPos)}` (used for `Drifters`).
 `World` puts everything in one group so `dispose()` swaps cleanly; `applyLevelLook()` rebuilds when `settings.level` changes
 (desktop select on the title screen; VR main menu "Level" card cycles).
@@ -162,6 +186,11 @@ A level def provides: `sky {top, horizon}`, `fog {color, density}`, `hemi`, `key
   ~190 street lamps (one Points draw for glows), parked cars, dumpsters, ash. Centre block kept clear.
 
 `Colliders`: circles `{x,z,r}` and segments `{x1,z1,x2,z2,r}` (+ `addBox`), 6 m grid, `resolve(x,z,r,out)`.
+
+Look: after `build()`, `toonify()` converts every Lambert prop to a toon material (set `userData.keepMaterial` to opt out). The
+ground keeps Lambert with `macroVariation` (two octaves of `noiseTexture()` to hide tiling). `GroundFog` is one transparent
+noise-scrolled disc (42 m) following the player. `Flames` are flickering additive glow points (graveyard braziers) — no real
+lights, the Quest pays per light per pixel.
 
 ## 9. Models & the asset pipeline (`models.js`, `creatures.js`)
 
@@ -175,6 +204,8 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   per-instance `aPhase`. **Sampler and uniforms are declared `highp`** — lowp defaults on Quest corrupt positions.
 - **Static non-bipeds** (bat, wraith, batlord, queen): `loadStaticModel` + `creatureMaterial(mode, opts, map)` with the
   procedural FLAP/WAVE vertex animation (`tagForShaderAnim`).
+- All creature materials are `MeshToonMaterial` (4-band ramp) patched by `toonShader()` for rim light; `{ outline: w }` builds
+  the inverted-hull ink pass (back faces pushed out along the normal by `w`). Rim colour/strength come from the level.
 - Meshopt-compressed GLBs have **Int16 quantized attributes**: convert with `toFloat()` before any transform.
 - `normalizeRoot` rescales to `height`, centres x/z, feet at y = 0; `lift` raises flyers (applied to geometry / baked positions).
 - Bosses clone the loaded geometry. Animated bosses have a private VAT material and clock; static bosses share the loaded material. Flash uses `emissive`. Private materials and boss geometry are disposed on death/restart.
@@ -187,13 +218,18 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   (peripheral darkening while moving/turning in VR) are camera children.
 - `Minimap`: 256 px canvas, 32 m range, forward-up (`ctx.rotate(+yaw)` — sign matters), top-right: desktop uses camera FOV/aspect with 0.13 m edge inset; XR uses (0.4, 0.28, −0.9).
   Dead enemies are filtered; healing orbs are red; FRONT marks the forward-up orientation.
-- Title screen: `index.html` overlay with `img#logo` (`mix-blend-mode: screen`) over `keyart.jpg`; scrollable on phones.
+- Title screen (`title.js`): “Press any button” splash (first input also starts audio + music), then a vertical menu — Play,
+  Battlefield ‹ ›, Enter VR (disabled with reason if unsupported), How to Play, Settings, Fullscreen — with a battlefield
+  preview card and a button-prompt bar. Keyboard (arrows/WASD, Enter/Space, Esc/Backspace, F), mouse hover/click, gamepad
+  (D-pad or left stick, A/Start, B). Logo is alpha-keyed from black at runtime. `#overlay` is only the in-game PAUSED screen.
+- Revolver: primitives with a stepped matcap (`matcapMaterial`) so the player's lantern can't blow it out, glowing rune channel,
+  back-face ink outline.
   VR main menu shows the logo (alpha-keyed from black at runtime) above cards with the key art behind.
 
 ## 11. Settings
 
 `settings.js` → localStorage. Keys: `turn` (`smooth|snap`), `turnSpeed` (deg/s), `vignette` (bool), `hud` (`wrist|camera`),
-`level` (`graveyard|village|city|castle`). Editable from the title-screen selects and the in-VR Settings cards.
+`level` (`graveyard|village|city|castle`), `music` (bool). Editable from the title screen and the in-VR Settings cards.
 
 ## 12. Testing without a headset (important)
 
@@ -232,9 +268,9 @@ they are disposed with the weapon. Precision damage numbers are cyan. No camera 
 ## 13. Known gaps / ideas not yet done
 
 - No touch controls (phones can view the title page only).
-- No audio assets/music (oscillator SFX only). No haptics in VR (gamepad rumble only).
+- No audio files (procedural music + SFX only). No haptics in VR (gamepad rumble only).
 - The Butcher appears in Castle Siege; it is still unscheduled in survival.
-- No meta-progression, weapon evolutions, or run summary screen.
+- No meta-progression.
 - Balance numbers (§5) were tuned with a headless bot, not with real VR play.
 
 

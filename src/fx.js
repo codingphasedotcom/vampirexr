@@ -38,8 +38,8 @@ export class GlowLayer {
         void main() {
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           float d = -mv.z;
-          vColor = aColor * exp(-uFog * uFog * d * d);
-          gl_PointSize = min(512.0, aSize * 420.0 / max(d, 0.1));
+          vColor = aColor * exp(-uFog * uFog * d * d) * smoothstep(0.25, 1.4, d);
+          gl_PointSize = min(256.0, aSize * 420.0 / max(d, 0.1));
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `

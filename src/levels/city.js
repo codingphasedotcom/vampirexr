@@ -55,8 +55,9 @@ export const city = {
   celestial: { position: [-80, 90, -110], radius: 6, color: 0xe6ecff, glow: 0x8090ff, glowSize: 60 },
   stars: true,
   clouds: { color: 0x3a3048, opacity: 0.5, count: 8 },
-  bloom: { strength: 0.6, threshold: 0.7 },
   playerLight: 10,
+  groundFog: { color: 0x3a3048, opacity: 0.35, height: 0.3 },
+  rimLight: { color: 0x8fd8ff, strength: 0.7 },
   ground: pavementTexture,
   build(group, col) {
     // roads: a grid of asphalt strips with dashed centre lines

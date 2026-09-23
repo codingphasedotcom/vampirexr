@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { rand, makeCanvas } from './utils.js';
-import { glowTexture } from './fx.js';
+import { glowTexture, fxTime } from './fx.js';
+import { RAMP } from './toon.js';
 
 // Shared world machinery: colliders, prop scattering, sky/fog/lights/ground driven by a level definition
 // (see src/levels/*.js). Everything a level adds goes into one group so switching levels is a clean swap.
@@ -94,6 +95,128 @@ function cloudTexture() {
   return new THREE.CanvasTexture(c);
 }
 
+// Tileable fractal value noise (R channel), shared by ground variation and ground fog.
+let _noise = null;
+export function noiseTexture() {
+  if (_noise) return _noise;
+  const S = 256, data = new Uint8Array(S * S * 4), acc = new Float32Array(S * S);
+  let amp = 1, total = 0;
+  for (const period of [4, 8, 16, 32, 64]) {
+    const lat = new Float32Array(period * period).map(() => Math.random());
+    const cell = S / period;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const gx = x / cell, gy = y / cell, x0 = Math.floor(gx), y0 = Math.floor(gy);
+      const fx = gx - x0, fy = gy - y0, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+      const v = (i, j) => lat[((y0 + j) % period) * period + ((x0 + i) % period)];
+      acc[y * S + x] += amp * ((v(0, 0) * (1 - sx) + v(1, 0) * sx) * (1 - sy) + (v(0, 1) * (1 - sx) + v(1, 1) * sx) * sy);
+    }
+    total += amp; amp *= 0.55;
+  }
+  for (let i = 0; i < S * S; i++) { const v = Math.round((acc[i] / total) * 255); data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v; data[i * 4 + 3] = 255; }
+  _noise = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+  _noise.wrapS = _noise.wrapT = THREE.RepeatWrapping;
+  _noise.magFilter = _noise.minFilter = THREE.LinearFilter;
+  _noise.needsUpdate = true;
+  return _noise;
+}
+
+// Breaks up the obvious tiling of canvas ground textures with two octaves of large-scale light/dark noise.
+function macroVariation(mat, strength) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uMacro = { value: noiseTexture() };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vMacro;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMacro = uv * 7.0;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uMacro; varying vec2 vMacro;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float mA = texture2D(uMacro, vMacro).r, mB = texture2D(uMacro, vMacro * 4.3 + 0.37).r;
+        diffuseColor.rgb *= mix(1.0 - ${strength.toFixed(2)}, 1.0 + ${(strength * 0.4).toFixed(2)}, smoothstep(0.25, 0.75, mA)) * mix(0.88, 1.08, mB);`);
+  };
+  mat.customProgramCacheKey = () => `ground-macro-${strength}`;
+  return mat;
+}
+
+// A drifting sheet of low mist that follows the player; enemies wade through it.
+export class GroundFog {
+  constructor(group, { color, opacity = 0.5, height = 0.4, radius = 42 }) {
+    this.radius = radius;
+    this.mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 48).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({
+      uniforms: { uNoise: { value: noiseTexture() }, uColor: { value: new THREE.Color(color) }, uOpacity: { value: opacity },
+        uTime: fxTime, uCenter: { value: new THREE.Vector3() }, uRadius: { value: radius } },
+      vertexShader: `varying vec3 vWorld;
+        void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform sampler2D uNoise; uniform vec3 uColor; uniform float uOpacity, uTime, uRadius; uniform vec3 uCenter;
+        varying vec3 vWorld;
+        void main() {
+          vec2 p = vWorld.xz;
+          float n = texture2D(uNoise, p * 0.035 + vec2(uTime * 0.011, uTime * 0.006)).r;
+          float m = texture2D(uNoise, p * 0.09 - vec2(uTime * 0.017, -uTime * 0.012)).r;
+          float d = length(p - uCenter.xz) / uRadius;
+          float a = smoothstep(0.45, 0.85, n * 0.75 + m * 0.45) * (1.0 - smoothstep(0.55, 1.0, d)) * smoothstep(0.02, 0.12, d) * uOpacity;
+          gl_FragColor = vec4(uColor, a);
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false, fog: false,
+    }));
+    this.mesh.position.y = height;
+    this.mesh.renderOrder = 5;
+    this.mesh.frustumCulled = false;
+    group.add(this.mesh);
+  }
+  update(playerPos) {
+    this.mesh.position.x = playerPos.x; this.mesh.position.z = playerPos.z;
+    this.mesh.material.uniforms.uCenter.value.copy(playerPos);
+  }
+}
+
+// Flickering fire glows (no real lights: the Quest pays per light per pixel). Positions are world points.
+export class Flames {
+  constructor(group, points, { color = 0xff8a2a, size = 1.6 } = {}) {
+    const n = points.length * 3;
+    this.base = points; this.pos = new Float32Array(n * 3); this.col = new Float32Array(n * 3);
+    this.color = new THREE.Color(color); this.hot = new THREE.Color(0xffe6a0);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
+    this.points = new THREE.Points(g, new THREE.PointsMaterial({ map: glowTexture(), size, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.points.frustumCulled = false;
+    group.add(this.points);
+  }
+  update(time) {
+    const p = this.pos, c = this.col;
+    this.base.forEach((b, i) => {
+      for (let k = 0; k < 3; k++) {
+        const j = (i * 3 + k) * 3, f = 0.65 + 0.35 * Math.sin(time * (9 + k * 4) + i * 1.7) * Math.sin(time * 5.3 + i);
+        p[j] = b.x + Math.sin(time * 3 + i + k) * 0.05; p[j + 1] = b.y + k * 0.28 + f * 0.08; p[j + 2] = b.z;
+        const col = k === 2 ? this.hot : this.color, s = f * (k === 0 ? 1.0 : k === 1 ? 0.8 : 0.55);
+        c[j] = col.r * s; c[j + 1] = col.g * s; c[j + 2] = col.b * s;
+      }
+    });
+    this.points.geometry.attributes.position.needsUpdate = true;
+    this.points.geometry.attributes.color.needsUpdate = true;
+  }
+}
+
+// Converts a level's Lambert props to cel-shaded toon materials so the world matches the characters.
+function toonify(group) {
+  const cache = new Map();
+  group.traverse((o) => {
+    if (!o.isMesh || o.userData.keepMaterial) return;
+    const m = o.material;
+    if (!m || !m.isMeshLambertMaterial) return;
+    let t = cache.get(m);
+    if (!t) {
+      t = new THREE.MeshToonMaterial({ gradientMap: RAMP, color: m.color, map: m.map, emissive: m.emissive, emissiveMap: m.emissiveMap,
+        emissiveIntensity: m.emissiveIntensity, vertexColors: m.vertexColors, flatShading: m.flatShading, side: m.side,
+        transparent: m.transparent, opacity: m.opacity });
+      cache.set(m, t);
+      m.dispose();
+    }
+    o.material = t;
+  });
+}
+
 // Drifting ambient points (fireflies, pollen, ash) that follow the player around.
 export class Drifters {
   constructor(group, { count = 70, color = 0xd8ff70, size = 0.15, opacity = 0.7, minY = 0.4, maxY = 2.6, radius = 26, speed = 1 } = {}) {
@@ -151,8 +274,9 @@ export class World {
     g.add(key);
     if (level.rim) { const rim = new THREE.DirectionalLight(level.rim.color, level.rim.intensity); rim.position.set(...level.rim.position); g.add(rim); }
 
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshLambertMaterial({ map: level.ground() }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), macroVariation(new THREE.MeshLambertMaterial({ map: level.ground() }), level.groundVariation ?? 0.35));
     ground.rotation.x = -Math.PI / 2;
+    ground.userData.keepMaterial = true;
     g.add(ground);
 
     if (level.celestial) {
@@ -189,6 +313,8 @@ export class World {
     }
 
     this.ambient = level.build(g, this.colliders) || null;
+    toonify(g);
+    this.groundFog = level.groundFog ? new GroundFog(g, level.groundFog) : null;
   }
 
   update(dt, time, playerPos) {
@@ -197,6 +323,7 @@ export class World {
       if (c.position.x > 260) c.position.x = -260;
     }
     this.ambient?.update?.(dt, time, playerPos);
+    this.groundFog?.update(playerPos);
   }
 
   dispose() {

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { toonMaterial, toonShader, makeOutline } from './toon.js';
 
 // Loads an animated GLB and bakes its skinned animation into a vertex-animation texture (VAT):
 // row f          = vertex positions at frame f
@@ -138,23 +139,11 @@ export async function loadStaticModel(url, { height = 1.7, yaw = 0, lift = 0 } =
   return { geometry, map };
 }
 
-// Lambert + map with a gentle per-instance sway so static horde models don't look frozen.
-export function staticMaterial(model, timeUniform) {
-  const mat = new THREE.MeshLambertMaterial({ map: model.map, color: 0xffffff });
-  mat.customProgramCacheKey = () => 'static-sway';
-  mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = timeUniform;
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nuniform float uTime;\nattribute float aPhase;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed.x += sin(uTime * 6.0 + aPhase) * 0.05 * position.y;');
-  };
-  return mat;
-}
-
-// Lambert material that reads positions/normals from the VAT with a per-instance phase (aPhase, in cycles).
-export function vatMaterial(vat, timeUniform, { rate = 1 } = {}) {
-  const mat = new THREE.MeshLambertMaterial({ map: vat.map, color: 0xffffff });
-  mat.customProgramCacheKey = () => 'vat-blended-walk';
+// Toon material that reads positions/normals from the VAT with a per-instance phase (aPhase, in cycles).
+export function vatMaterial(vat, timeUniform, { rate = 1, outline = 0 } = {}) {
+  const mat = toonMaterial({ map: vat.map, color: 0xffffff });
+  if (outline) makeOutline(mat, outline);
+  mat.customProgramCacheKey = () => `vat-blended-walk-${outline}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uVat = { value: vat.texture };
     shader.uniforms.uVatVerts = { value: vat.verts };
@@ -182,6 +171,7 @@ export function vatMaterial(vat, timeUniform, { rate = 1 } = {}) {
         vec3 objectNormal = normalize(mix(texture2D(uVat, vatUv(uVatFrames + vatFrame)).xyz,
           texture2D(uVat, vatUv(uVatFrames + nextFrame)).xyz, blend));`)
       .replace('#include <begin_vertex>', 'vec3 transformed = mix(texture2D(uVat, vatUv(vatFrame)).xyz, texture2D(uVat, vatUv(nextFrame)).xyz, blend);');
+    toonShader(shader);
   };
   return mat;
 }

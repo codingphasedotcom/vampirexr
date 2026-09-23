@@ -40,24 +40,39 @@ export class EnemyManager {
     this.walkTimes = {};
     this.counts = {};
     this.grid = new Map();
+    this.dying = [];          // killed enemies play a short collapse before leaving the render
+    this.outlines = {};       // ink-outline companions (desktop only; too many vertices for the Quest)
+    this.outlinesVisible = true;
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       const geo = t.build();
       const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX[name]), 1).setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute('aPhase', phase);
       this.walkTimes[name] = new THREE.InstancedBufferAttribute(new Float32Array(MAX[name]), 1).setUsage(THREE.DynamicDrawUsage);
       geo.setAttribute('aWalkTime', this.walkTimes[name]);
-      const mesh = new THREE.InstancedMesh(geo, creatureMaterial(t.anim[0], t.anim[1]), MAX[name]);
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.frustumCulled = false;
-      mesh.setColorAt(0, _c.setScalar(1)); // allocates instanceColor; used as a brightness multiplier for hit flashes
-      mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-      mesh.count = 0;
-      scene.add(mesh);
-      this.meshes[name] = mesh;
       this.phases[name] = phase;
+      this.setTypeMesh(name, geo, creatureMaterial(t.anim[0], t.anim[1]), creatureMaterial(t.anim[0], t.anim[1], null, { outline: 0.03 }));
       this.counts[name] = 0;
     }
     this.counts.boss = 0;
+  }
+
+  // Installs (or replaces) the instanced mesh for a type, plus an outline mesh sharing its instance buffers.
+  setTypeMesh(name, geometry, material, outlineMaterial) {
+    const mesh = new THREE.InstancedMesh(geometry, material, MAX[name]);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;
+    mesh.setColorAt(0, _c.setScalar(1)); // allocates instanceColor: per-enemy tint × hit flash
+    mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    mesh.count = 0;
+    const outline = new THREE.InstancedMesh(geometry, outlineMaterial, MAX[name]);
+    outline.instanceMatrix = mesh.instanceMatrix;
+    outline.instanceColor = mesh.instanceColor;
+    outline.frustumCulled = false;
+    outline.count = 0;
+    if (this.meshes[name]) this.scene.remove(this.meshes[name], this.outlines[name]);
+    this.scene.add(mesh, outline);
+    this.meshes[name] = mesh;
+    this.outlines[name] = outline;
   }
 
   get alive() { return this.list.length; }
@@ -66,14 +81,16 @@ export class EnemyManager {
   // Runs in the background; a type keeps its procedural look if its model fails to load.
   // Loads one configured model. Animated GLBs are baked to a VAT; static ones get the procedural
   // creature shader (flap / wave / shamble) driven by the type's `anim` mode.
-  async loadModel(t) {
+  async loadModel(t, outline = 0.02) {
     if (t.model.animated === false) {
       const m = await loadStaticModel(t.model.url, t.model);
       tagForShaderAnim(m.geometry);
-      return { geometry: m.geometry, material: creatureMaterial(t.anim[0], t.anim[1], m.map) };
+      return { geometry: m.geometry, material: creatureMaterial(t.anim[0], t.anim[1], m.map),
+        outlineMaterial: creatureMaterial(t.anim[0], t.anim[1], m.map, { outline }) };
     }
     const vat = await loadVATModel(t.model.url, t.model);
-    return { vat, geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }) };
+    return { vat, geometry: vat.geometry, material: vatMaterial(vat, enemyTime, { rate: t.model.rate }),
+      outlineMaterial: vatMaterial(vat, enemyTime, { rate: t.model.rate, outline }) };
   }
 
   async loadModels(bossDefs = [], onDone = null) {
@@ -85,24 +102,16 @@ export class EnemyManager {
     };
     for (const def of bossDefs) {
       if (!def.model) continue;
-      this.loadModel(def).then((m) => { this.bossModels[def.name] = m; report(def.name); })
+      this.loadModel(def, 0.035).then((m) => { this.bossModels[def.name] = m; report(def.name); })
         .catch((err) => { console.warn(`Boss model for ${def.name} not loaded, keeping procedural:`, err.message || err); report(def.name, err); });
     }
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       if (!t.model) continue;
       try {
-        const { geometry, material } = await this.loadModel(t);
+        const { geometry, material, outlineMaterial } = await this.loadModel(t);
         geometry.setAttribute('aPhase', this.phases[name]);
         geometry.setAttribute('aWalkTime', this.walkTimes[name]);
-        const mesh = new THREE.InstancedMesh(geometry, material, MAX[name]);
-        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-        mesh.frustumCulled = false;
-        mesh.setColorAt(0, _c.setScalar(1));
-        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
-        mesh.count = 0;
-        this.scene.remove(this.meshes[name]);
-        this.scene.add(mesh);
-        this.meshes[name] = mesh;
+        this.setTypeMesh(name, geometry, material, outlineMaterial);
         report(name);
       } catch (err) {
         console.warn(`Model for ${name} not loaded, keeping procedural:`, err.message || err);
@@ -117,21 +126,27 @@ export class EnemyManager {
     let geo, material;
     const walkClock = { value: 0 };
     const loaded = this.bossModels?.[def.name];
+    let outlineMat;
     if (loaded) {
       geo = loaded.geometry.clone();
       material = loaded.vat ? vatMaterial(loaded.vat, walkClock, { rate: def.model.rate }) : loaded.material;
+      outlineMat = loaded.vat ? vatMaterial(loaded.vat, walkClock, { rate: def.model.rate, outline: 0.035 }) : loaded.outlineMaterial;
     } else {
       geo = def.build();
       material = creatureMaterial(def.anim[0], def.anim[1]);
+      outlineMat = creatureMaterial(def.anim[0], def.anim[1], null, { outline: 0.04 });
     }
     geo.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count), 1));
     const mesh = new THREE.Mesh(geo, material);
     mesh.userData.ownsMaterial = !!loaded?.vat;
     mesh.frustumCulled = false;
+    const outline = new THREE.Mesh(geo, outlineMat);
+    outline.frustumCulled = false;
+    mesh.add(outline); // bosses keep their outline in VR too: one extra draw call
     this.scene.add(mesh);
     const t = { ...def, boss: true };
     const hp = def.hp * hpMul;
-    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1 };
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1, age: 0 };
     this.list.push(e);
     this.counts.boss++;
     return e;
@@ -154,7 +169,7 @@ export class EnemyManager {
       dmgMul: scale,
       xp: Math.max(1, Math.round(t.xp * scale)),
       shootT: k.cooldown ? Math.random() * k.cooldown : 0,
-      flash: 0, phase: Math.random() * Math.PI * 2, kx: 0, kz: 0, orbHit: -1, dead: false,
+      flash: 0, phase: Math.random() * Math.PI * 2, kx: 0, kz: 0, orbHit: -1, dead: false, age: 0,
     };
     this.list.push(e);
     this.counts[type]++;
@@ -202,10 +217,17 @@ export class EnemyManager {
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
-      if (e.dead) { this.counts[e.type]--; if (e.mesh) { this.scene.remove(e.mesh); e.mesh.geometry.dispose(); if (e.mesh.userData.ownsMaterial) e.mesh.material.dispose(); } }
+      if (e.dead) { this.counts[e.type]--; e.dieT = e.dieMax = e.t.boss ? 1.4 : 0.42; this.dying.push(e); }
       else this.list[w++] = e;
     }
     this.list.length = w;
+    w = 0;
+    for (const e of this.dying) {
+      e.dieT -= dt;
+      if (e.dieT > 0) { this.dying[w++] = e; continue; }
+      if (e.mesh) this.disposeBoss(e);
+    }
+    this.dying.length = w;
 
     this.grid.clear();
     for (const e of this.list) {
@@ -262,31 +284,49 @@ export class EnemyManager {
 
     const idx = {};
     for (const n in this.meshes) idx[n] = 0;
-    for (const e of this.list) {
-      const walkTime = advanceWalk(e, dt);
+    const draw = (e, dying) => {
+      const walkTime = dying ? (e.walkTime ?? 0) : advanceWalk(e, dt);
+      e.age += dt;
+      // spawn: pop up out of the ground with a little overshoot; death: flash, swell, then crumple and sink
+      const rise = Math.min(1, e.age / 0.45);
+      const pop = 1 + 2.2 * Math.pow(rise - 1, 3) + 1.2 * Math.pow(rise - 1, 2);
+      let scale = pop, sink = e.t.fly ? 0 : (1 - rise) * -0.6, tilt = 0, glow = 1 + e.flash * 3;
+      if (dying) {
+        const p = 1 - e.dieT / e.dieMax;
+        scale = p < 0.18 ? 1 + p * 1.2 : 1.22 * Math.pow(1 - (p - 0.18) / 0.82, 1.4);
+        sink = -p * 0.35; tilt = p * 0.9; glow = 4 * (1 - p) + 0.3;
+      }
+      const yaw = Math.atan2(px - e.x, pz - e.z);
       if (e.mesh) {
         e.walkClock.value = walkTime;
-        e.mesh.position.set(e.x, e.t.fly ? Math.sin(time * 3 + e.phase) * 0.3 : 0, e.z);
-        e.mesh.rotation.y = Math.atan2(px - e.x, pz - e.z);
-        e.mesh.material.emissive.setScalar(e.flash * 0.8);
+        e.mesh.position.set(e.x, (e.t.fly ? Math.sin(time * 3 + e.phase) * 0.3 : 0) + sink, e.z);
+        e.mesh.rotation.set(tilt * 0.4, yaw, 0, 'YXZ');
+        e.mesh.scale.setScalar(scale);
+        e.mesh.material.emissive.setScalar(Math.min(1, e.flash * 0.8 + (dying ? 1 - e.dieT / e.dieMax : 0)));
         if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
-        continue;
+        return;
       }
-      const m = this.meshes[e.type], i = idx[e.type]++;
+      const m = this.meshes[e.type], i = idx[e.type];
+      if (i >= m.instanceMatrix.count) return;
+      idx[e.type]++;
       const bob = e.t.fly ? Math.sin(time * 5 + e.phase) * 0.18 : 0;
-      dummy.position.set(e.x, bob, e.z);
-      dummy.rotation.set(0, Math.atan2(px - e.x, pz - e.z), 0);
-      dummy.scale.setScalar(e.scale * (1 + e.flash * 0.12));
+      dummy.position.set(e.x, bob + sink, e.z);
+      dummy.rotation.set(tilt, yaw, 0, 'YXZ');
+      dummy.scale.setScalar(e.scale * scale * (1 + e.flash * 0.12));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
-      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(1 + e.flash * 3));
+      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(glow));
       this.phases[e.type].array[i] = e.phase;
       this.walkTimes[e.type].array[i] = walkTime;
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
-    }
+    };
+    for (const e of this.list) draw(e, false);
+    for (const e of this.dying) draw(e, true);
     for (const n in this.meshes) {
-      const m = this.meshes[n];
+      const m = this.meshes[n], o = this.outlines[n];
       m.count = idx[n];
+      o.count = idx[n];
+      o.visible = this.outlinesVisible;
       m.instanceMatrix.needsUpdate = true;
       m.instanceColor.needsUpdate = true;
       this.phases[n].needsUpdate = true;
@@ -295,8 +335,26 @@ export class EnemyManager {
     return contact;
   }
 
+  disposeBoss(e) {
+    this.scene.remove(e.mesh);
+    e.mesh.geometry.dispose();
+    if (e.mesh.userData.ownsMaterial) { e.mesh.material.dispose(); e.mesh.children[0]?.material.dispose(); }
+  }
+
+  // Soft ground shadows for everything alive or dying; flyers cast smaller, fainter ones.
+  drawShadows(shadows) {
+    const add = (e, k) => {
+      const r = (e.t.boss ? e.size * 0.55 : e.size * 0.62) * k;
+      shadows.add(e.x, e.z, e.t.fly ? r * 0.7 : r, (e.t.fly ? 0.4 : 0.75) * Math.min(1, e.age / 0.3));
+    };
+    for (const e of this.list) add(e, 1);
+    for (const e of this.dying) add(e, e.dieT / e.dieMax);
+  }
+
   reset() {
-    for (const e of this.list) if (e.mesh) { this.scene.remove(e.mesh); e.mesh.geometry.dispose(); if (e.mesh.userData.ownsMaterial) e.mesh.material.dispose(); }
+    for (const e of this.list) if (e.mesh) this.disposeBoss(e);
+    for (const e of this.dying) if (e.mesh) this.disposeBoss(e);
+    this.dying.length = 0;
     this.list.length = 0;
     this.grid.clear();
     for (const n in this.meshes) { this.counts[n] = 0; this.meshes[n].count = 0; }

@@ -9,8 +9,9 @@ export const castle = {
   key: { color: 0xffdcad, intensity: 2, position: [20, 60, 10] },
   rim: { color: 0x91adff, intensity: 1, position: [-30, 30, -80] },
   stars: true, clouds: { color: 0xbeb6db, opacity: 0.3, count: 5 },
-  celestial: { position: [-80, 100, -120], radius: 9, color: 0xe5efff, glow: 0x93bfff, glowSize: 70 },
-  bloom: { strength: 0.35, threshold: 0.9 }, playerLight: 4,
+  celestial: { position: [-80, 100, -120], radius: 9, color: 0xe5efff, glow: 0x93bfff, glowSize: 70 }, playerLight: 4,
+  groundFog: { color: 0x9a8fb0, opacity: 0.25, height: 0.3 },
+  rimLight: { color: 0xc9b8ff, strength: 0.55 },
   ground: () => tileTexture(256, 100, (g, s) => {
     g.fillStyle = '#484557'; g.fillRect(0, 0, s, s);
     for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {

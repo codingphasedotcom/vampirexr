@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { rand } from '../utils.js';
-import { scatter, tileTexture, Drifters, _d } from '../world.js';
+import { scatter, tileTexture, Drifters, Flames, _d } from '../world.js';
 
 const HORIZON = 0x1c1230;
 
@@ -98,8 +98,9 @@ export const graveyard = {
   celestial: { position: [60, 70, -120], radius: 7, color: 0xe6ecff, glow: 0x7f8cff, glowSize: 70 },
   stars: true,
   clouds: { color: 0x5a4a80, opacity: 0.5, count: 10 },
-  bloom: { strength: 0.55, threshold: 0.72 },
   playerLight: 14,
+  groundFog: { color: 0x6a5a9a, opacity: 0.42, height: 0.35 },
+  rimLight: { color: 0xa9b8ff, strength: 0.75 },
   ground: groundTexture,
   build(group, col) {
     const stone = new THREE.MeshLambertMaterial({ color: 0x4a4458 });
@@ -118,6 +119,21 @@ export const graveyard = {
       d.rotation.set(rand(-0.05, 0.05), rand(0, Math.PI * 2), rand(-0.05, 0.05)); d.scale.set(1, rand(0.4, 1.2), 1);
     }, col, () => 0.5));
     fenceRuns(group, col, iron, 14, 10, 80);
-    return new Drifters(group, { count: 70, color: 0xd8ff70, size: 0.15 });
+    // stone braziers with flickering fire mark out the arena; glows only, no real lights
+    const fires = [];
+    const pedestal = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.28, 0.4, 1.1, 8).translate(0, 0.55, 0), stone, 18);
+    const bowl = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.55, 0.3, 0.35, 10).translate(0, 1.25, 0), iron, 18);
+    const coals = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.45, 0.45, 0.06, 10).translate(0, 1.42, 0), new THREE.MeshBasicMaterial({ color: 0xff6a1a }), 18);
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * Math.PI * 2 + rand(-0.12, 0.12), r = i % 2 ? rand(9, 16) : rand(24, 40);
+      _d.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); _d.rotation.set(0, rand(0, 6), 0); _d.scale.setScalar(1); _d.updateMatrix();
+      pedestal.setMatrixAt(i, _d.matrix); bowl.setMatrixAt(i, _d.matrix); coals.setMatrixAt(i, _d.matrix);
+      col.add({ x: _d.position.x, z: _d.position.z, r: 0.5 });
+      fires.push(new THREE.Vector3(_d.position.x, 1.55, _d.position.z));
+    }
+    group.add(pedestal, bowl, coals);
+    const flames = new Flames(group, fires, { color: 0xff7a22, size: 1.5 });
+    const drift = new Drifters(group, { count: 70, color: 0xd8ff70, size: 0.15 });
+    return { update(dt, time, p) { drift.update(dt, time, p); flames.update(time); } };
   },
 };

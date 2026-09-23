@@ -18,6 +18,7 @@ export class Input {
     this.padNav = 0; // -1 / +1 edge from d-pad or bumpers, for cycling menu cards
     this.usingPad = false;
     this._padHeld = {};
+    this.uiEvents = []; // edge-triggered menu actions from the gamepad: up/down/left/right/accept/back/any
     this.onKey = null;
     this.onUnlockedClick = null;
     this.onHands = null;
@@ -77,6 +78,7 @@ export class Input {
       obj.addEventListener('disconnected', () => { c.source = null; c.hand = null; });
       obj.addEventListener('selectstart', () => { c.selectEdge = true; c.selecting = true; });
       obj.addEventListener('selectend', () => { c.selecting = false; });
+      obj.addEventListener('squeezestart', () => { this.squeezeEdge = true; });
       this.controllers.push(c);
     }
   }
@@ -105,12 +107,21 @@ export class Input {
     const nav = (pressed(15) || pressed(5) ? 1 : 0) - (pressed(14) || pressed(4) ? 1 : 0);
     if (edge('nav', nav !== 0)) this.padNav = nav;
     for (let i = 0; i < 4; i++) if (edge('face' + i, pressed(i))) this.padFace = i; // A B X Y edges for menus
+    // menu navigation: D-pad or left stick, A/Start accept, B back
+    const ax = a[0] || 0, ay = a[1] || 0;
+    const ui = { up: pressed(12) || ay < -0.6, down: pressed(13) || ay > 0.6, left: pressed(14) || ax < -0.6, right: pressed(15) || ax > 0.6,
+      accept: pressed(0) || pressed(9), back: pressed(1), any: pressed(2) || pressed(3) };
+    for (const k in ui) if (edge('ui-' + k, ui[k])) this.uiEvents.push(k);
   }
+
+  consumeUi() { const e = this.uiEvents; this.uiEvents = []; return e; }
 
   rumble(strong = 0.6, weak = 0.3, ms = 80) {
     const act = this.pad?.vibrationActuator;
     if (act?.playEffect) act.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }).catch(() => {});
   }
+
+  consumeSqueeze() { const v = !!this.squeezeEdge; this.squeezeEdge = false; return v; }
 
   consumePadSelect() { const v = this.padSelectEdge; this.padSelectEdge = false; return v; }
   consumePadStart() { const v = this.padStartEdge; this.padStartEdge = false; return v; }

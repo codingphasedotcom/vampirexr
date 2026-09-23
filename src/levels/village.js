@@ -93,8 +93,8 @@ export const village = {
   celestial: { position: [120, 170, 60], radius: 8, color: 0xfff8e6, glow: 0xfff0c0, glowSize: 110, glowOpacity: 0.7 },
   stars: false,
   clouds: { color: 0xffffff, opacity: 0.85, count: 14 },
-  bloom: { strength: 0.25, threshold: 0.95 },
   playerLight: 0,
+  rimLight: { color: 0xfff1d6, strength: 0.4 },
   ground: grassTexture,
   build(group, col) {
     buildHouses(group, col, 22);

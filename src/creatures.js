@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { toonMaterial, toonShader, makeOutline } from './toon.js';
 
 // Procedural low-poly creatures. Each is a single merged geometry with vertex colors plus two extra
 // attributes: aAnim (which limb this vertex belongs to, sign = side) and aGlow (emissive, for eyes).
@@ -108,21 +109,23 @@ const ANIM = /* glsl */ `
 #endif
 `;
 
-// Lambert with vertex colors, per-instance phase, limb animation and emissive eyes.
-export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}, map = null) {
-  const mat = map
-    ? new THREE.MeshLambertMaterial({ map })
-    : new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+// Cel-shaded toon material with vertex colors (or a texture map), per-instance phase, limb animation,
+// emissive eyes and rim light. `outline` > 0 builds the matching ink-outline pass instead.
+export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}, map = null, { outline = 0 } = {}) {
+  const mat = map ? toonMaterial({ map }) : toonMaterial({ vertexColors: true, flatShading: true });
   mat.defines = { [mode]: '', ANIM_SPEED: speed.toFixed(2), HIP: hip.toFixed(2) };
-  mat.customProgramCacheKey = () => `${mode}-${speed}-${hip}-${map ? 'map' : 'vc'}`;
+  if (outline) makeOutline(mat, outline);
+  mat.customProgramCacheKey = () => `${mode}-${speed}-${hip}-${map ? 'map' : 'vc'}-${outline}`;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = enemyTime;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute float aAnim;\nattribute float aGlow;\nattribute float aPhase;\nuniform float uTime;\nvarying float vGlow;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>\nvGlow = aGlow;\n${ANIM}`);
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying float vGlow;')
-      .replace('#include <opaque_fragment>', map ? '#include <opaque_fragment>' : 'outgoingLight = mix(outgoingLight, vColor.rgb * 1.8, vGlow);\n#include <opaque_fragment>');
+      .replace('#include <common>', '#include <common>\nvarying float vGlow;');
+    toonShader(shader);
+    if (!map) shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>',
+      '#ifndef OUTLINE\noutgoingLight = mix(outgoingLight, vColor.rgb * 1.8, vGlow);\n#endif\n#include <opaque_fragment>');
   };
   return mat;
 }

@@ -141,6 +141,10 @@ export class Hud {
     const maxed = p.level >= MAX_LEVEL;
     g.fillStyle = '#141a33'; roundRect(g, 16, oy + 50, 480, 14, 5); g.fill();
     g.fillStyle = maxed ? '#ffd166' : '#6a8dff'; roundRect(g, 16, oy + 50, 480 * (maxed ? 1 : Math.min(1, p.xp / p.xpToNext)), 14, 5); g.fill();
+    // dash readiness: thin bar under XP, bright cyan when ready
+    const dash = this.dash ?? 1;
+    g.fillStyle = '#10222a'; roundRect(g, 16, oy + 68, 480, 5, 2); g.fill();
+    g.fillStyle = dash >= 1 ? '#7ff3ff' : '#3a7f8f'; roundRect(g, 16, oy + 68, 480 * Math.max(0, dash), 5, 2); g.fill();
 
     g.font = 'bold 32px system-ui, sans-serif';
     if (this.toastTimer > 0) {

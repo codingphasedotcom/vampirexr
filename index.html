@@ -4,54 +4,125 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VampiresXR</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; color: #eee; }
+    :root { --blood: #ff3d64; --muted: #b3aac6; --line: rgba(255, 255, 255, .1); --panel: rgba(14, 8, 22, .72); }
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: Inter, system-ui, sans-serif; color: #eee; }
     canvas { display: block; }
-    #overlay { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; z-index: 10;
-      padding: 24px 16px; box-sizing: border-box; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y;
-      background: linear-gradient(rgba(4, 2, 10, .35), rgba(4, 2, 10, .85)), url('/img/keyart.jpg') center / cover no-repeat; }
-    #overlay > * { flex-shrink: 0; }
-    @media (max-height: 640px), (max-width: 640px) {
-      #overlay { justify-content: flex-start; gap: 14px; }
-      #logo { width: min(420px, 88vw); }
-      #overlay p { font-size: 14px; }
-      button { font-size: 17px; padding: 10px 20px; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    kbd { display: inline-block; min-width: 16px; padding: 1px 6px; border-radius: 5px; background: #2a2236; border: 1px solid #4a3d5e; border-bottom-width: 2px;
+      font: 600 11.5px Inter, sans-serif; color: #fff; text-align: center; margin: 0 1px; }
+
+    /* ---------- title screen ---------- */
+    #title { position: fixed; inset: 0; z-index: 20; overflow: hidden; user-select: none; -webkit-user-select: none; }
+    #title[hidden] { display: none; }
+    .t-art { position: absolute; inset: -4%; background: url('/img/keyart.jpg') center / cover no-repeat; animation: kenburns 38s ease-in-out infinite alternate; }
+    @keyframes kenburns { from { transform: scale(1) translate(0, 0); } to { transform: scale(1.09) translate(-1.5%, 1%); } }
+    .t-shade { position: absolute; inset: 0;
+      background: linear-gradient(90deg, rgba(6, 2, 10, .94) 0%, rgba(6, 2, 10, .78) 34%, rgba(6, 2, 10, .2) 62%, rgba(6, 2, 10, .55) 100%),
+                  linear-gradient(0deg, rgba(6, 2, 10, .9) 0%, transparent 28%); }
+    #title[data-screen="splash"] .t-shade { background: radial-gradient(ellipse at 50% 45%, rgba(6, 2, 10, .25), rgba(6, 2, 10, .9) 78%); }
+    .t-embers { position: absolute; inset: 0; pointer-events: none; }
+    .t-embers i { position: absolute; bottom: -12px; width: 4px; height: 4px; border-radius: 50%; background: #ff9a5a; box-shadow: 0 0 10px #ff5a3a;
+      opacity: 0; transform: scale(var(--s)); animation: rise linear infinite; }
+    @keyframes rise { 0% { translate: 0 0; opacity: 0; } 12% { opacity: .9; } 100% { translate: 50px -108vh; opacity: 0; } }
+
+    .t-splash { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 5vh; cursor: pointer; }
+    #title[data-screen="splash"] .t-splash { display: flex; }
+    #title[data-screen="splash"] .t-main { display: none; }
+    .t-logo { display: block; width: min(440px, 80vw); filter: drop-shadow(0 0 26px rgba(255, 60, 100, .6)); }
+    .t-logo-big { width: min(760px, 88vw); animation: breathe 5s ease-in-out infinite; }
+    @keyframes breathe { 50% { filter: drop-shadow(0 0 48px rgba(255, 60, 100, .85)); } }
+    .t-press { font-family: Cinzel, serif; font-weight: 700; letter-spacing: .5em; text-transform: uppercase; font-size: clamp(14px, 2vw, 20px);
+      color: #fff; text-shadow: 0 0 18px var(--blood); animation: blink 1.6s ease-in-out infinite; padding-left: .5em; }
+    @keyframes blink { 50% { opacity: .25; } }
+
+    .t-main { position: absolute; inset: 0 0 56px 0; display: flex; justify-content: space-between; align-items: stretch; padding: 5vh 5vw 0; box-sizing: border-box; gap: 3vw; }
+    .t-left { display: flex; flex-direction: column; min-width: 0; max-width: 560px; flex: 1; }
+    .t-left .t-logo { margin: 0 0 4vh -8px; animation: fadein .5s ease-out; }
+    .t-heading { font-family: Cinzel, serif; font-weight: 800; font-size: 30px; letter-spacing: .12em; text-transform: uppercase; color: #fff; margin: 0 0 14px; }
+    .t-heading:empty { display: none; }
+    .t-menu { display: flex; flex-direction: column; gap: 4px; }
+    .t-item { all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      padding: 9px 18px 9px 22px; position: relative; font-family: Cinzel, serif; font-weight: 700; font-size: clamp(18px, 2.3vw, 25px);
+      letter-spacing: .12em; text-transform: uppercase; color: rgba(255, 255, 255, .62); transition: color .12s, transform .15s, background .15s;
+      border-radius: 4px; animation: slidein .35s ease-out backwards; }
+    .t-item:nth-child(2) { animation-delay: .04s; } .t-item:nth-child(3) { animation-delay: .08s; } .t-item:nth-child(4) { animation-delay: .12s; }
+    .t-item:nth-child(5) { animation-delay: .16s; } .t-item:nth-child(6) { animation-delay: .2s; }
+    @keyframes slidein { from { opacity: 0; transform: translateX(-18px); } }
+    @keyframes fadein { from { opacity: 0; } }
+    .t-item::before { content: ''; position: absolute; left: 0; top: 50%; width: 8px; height: 8px; margin-top: -4px; transform: rotate(45deg) scale(0);
+      background: var(--blood); box-shadow: 0 0 12px var(--blood); transition: transform .15s; }
+    .t-item.on { color: #fff; transform: translateX(10px); background: linear-gradient(90deg, rgba(255, 61, 100, .28), rgba(255, 61, 100, 0) 85%);
+      text-shadow: 0 0 20px rgba(255, 61, 100, .8); }
+    .t-item.on::before { transform: rotate(45deg) scale(1); }
+    .t-item.big { font-size: clamp(26px, 3.4vw, 38px); }
+    .t-item.off { color: rgba(255, 255, 255, .25); cursor: default; }
+    .t-item.back { margin-top: 10px; font-size: 18px; }
+    .t-value { font-family: Inter, sans-serif; font-weight: 700; font-size: 15px; letter-spacing: .04em; text-transform: none; color: #ffd6e0;
+      display: inline-flex; align-items: center; gap: 10px; }
+    .t-arrow { font-style: normal; font-size: 22px; line-height: 1; color: var(--blood); padding: 0 4px; opacity: .45; }
+    .t-item.on .t-arrow { opacity: 1; }
+    .t-note { font-family: Inter, sans-serif; font-size: 12px; letter-spacing: 0; text-transform: none; font-weight: 400; color: rgba(255, 255, 255, .35); width: 100%; margin-top: -2px; }
+    .t-panel:empty { display: none; }
+    .t-panel { margin-top: 18px; overflow-y: auto; max-height: calc(100vh - 360px); min-height: 160px; padding-right: 6px; }
+    .t-howto { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .t-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+    .t-card h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: #fff; }
+    .t-card p { margin: 4px 0; font-size: 13px; color: #d4cce2; }
+    .t-tips { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 6px; font-size: 13px; color: #d4cce2; }
+    .t-tips i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+    .t-tips b { color: #fff; margin-right: 4px; }
+
+    .t-level { align-self: flex-end; width: min(360px, 32vw); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 20px 60px rgba(0, 0, 0, .5); margin-bottom: 2vh; animation: fadein .4s ease-out; }
+    .t-level:empty { display: none; }
+    .t-lv-art { height: 150px; display: flex; align-items: center; justify-content: center; position: relative; }
+    .t-lv-art::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(14, 8, 22, .95)); }
+    .t-lv-art span { font-size: 64px; filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .6)); position: relative; z-index: 1; }
+    .t-lv-body { padding: 4px 18px 18px; }
+    .t-lv-kicker { font-size: 11px; letter-spacing: .25em; text-transform: uppercase; color: var(--blood); font-weight: 700; }
+    .t-lv-name { font-family: Cinzel, serif; font-weight: 800; font-size: 26px; letter-spacing: .06em; margin: 2px 0 6px; }
+    .t-lv-desc { font-size: 13.5px; color: #d4cce2; line-height: 1.5; }
+    .t-lv-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+    .t-lv-tags span { font-size: 11px; font-weight: 700; letter-spacing: .06em; padding: 4px 8px; border-radius: 999px; background: rgba(255, 255, 255, .08); border: 1px solid var(--line); }
+
+    .t-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 56px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 5vw; font-size: 13px; color: var(--muted); background: linear-gradient(0deg, rgba(0, 0, 0, .6), transparent); gap: 16px; }
+    .t-hints { display: flex; gap: 20px; flex-wrap: wrap; }
+    .t-ver { opacity: .5; white-space: nowrap; }
+
+    @media (max-width: 760px) {
+      .t-main { flex-direction: column; justify-content: flex-start; padding-top: 3vh; overflow-y: auto; inset: 0 0 56px 0; }
+      .t-left { max-width: none; flex: none; }
+      .t-left .t-logo { margin: 0 auto 3vh; width: 78vw; }
+      .t-level { width: 100%; align-self: stretch; flex: none; }
+      .t-howto { grid-template-columns: 1fr; }
+      .t-shade { background: linear-gradient(0deg, rgba(6, 2, 10, .92), rgba(6, 2, 10, .55)); }
+      .t-hints { gap: 10px; font-size: 11px; }
+      .t-ver { display: none; }
     }
-    .settings { flex-wrap: wrap; justify-content: center; }
-    #fullscreenBtn { font-size: 15px; padding: 6px 12px; border-color: #555; color: #bbb; }
-    #logo { width: min(640px, 80vw); mix-blend-mode: screen; filter: drop-shadow(0 0 24px rgba(255, 60, 100, .5)); }
-    #ovTitle.small { font-size: 34px; letter-spacing: 3px; }
+
+    /* ---------- in-game pause overlay ---------- */
+    #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+      text-align: center; background: radial-gradient(ellipse at center, rgba(10, 4, 18, .6), rgba(4, 2, 8, .92)); }
     #overlay.hidden, #crosshair.hidden { display: none; }
-    #overlay h1 { font-size: 60px; margin: 0; letter-spacing: 6px; color: #ff4d6d; text-shadow: 0 0 28px #ff4d6d; }
-    #overlay p { max-width: 540px; line-height: 1.6; color: #bbb; margin: 0; }
-    #overlay small { color: #777; align-self: center; }
-    button { font: inherit; font-size: 20px; padding: 12px 28px; border: 2px solid #ff4d6d; background: #14101c; color: #fff; border-radius: 8px; cursor: pointer; }
-    button:hover { background: #ff4d6d; }
-    .row { display: flex; gap: 12px; align-items: center; }
-    .settings { font-size: 14px; color: #999; gap: 18px; margin-top: 6px; }
-    .settings select { font: inherit; background: #14101c; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; }
+    #ovTitle { font-family: Cinzel, serif; font-size: 54px; margin: 0; letter-spacing: 8px; color: var(--blood); text-shadow: 0 0 28px var(--blood); }
+    #ovMsg { max-width: 540px; line-height: 1.6; color: #d8d1e6; margin: 0; }
+    #playDesktop { font-weight: 700; font-size: 20px; padding: 13px 34px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .15);
+      background: linear-gradient(180deg, #ff4d73, #b3143c); box-shadow: 0 8px 30px rgba(255, 45, 90, .35); }
     #crosshair { position: fixed; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #fff; box-shadow: 0 0 6px #000; z-index: 5; pointer-events: none; }
   </style>
 </head>
 <body>
   <div id="crosshair" class="hidden"></div>
-  <div id="overlay">
-    <img id="logo" src="/img/logo.png" alt="VampiresXR">
-    <h1 id="ovTitle" class="small" hidden></h1>
+  <div id="title"></div>
+  <div id="overlay" class="hidden">
+    <h1 id="ovTitle">PAUSED</h1>
     <p id="ovMsg"></p>
-    <div class="row">
-      <button id="playDesktop">Play on Desktop</button>
-      <div id="vrButtonHolder"></div>
-    </div>
-    <div class="row">
-      <button id="fullscreenBtn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
-    </div>
-    <div class="row settings">
-      <label>Level <select id="setLevel"><option value="graveyard">Graveyard (night)</option><option value="village">Village (day)</option><option value="city">City (night)</option><option value="castle">Castle Siege (adventure)</option></select></label>
-      <label>Turn <select id="setTurn"><option value="smooth">Smooth</option><option value="snap">Snap 45°</option></select></label>
-      <label>Comfort vignette <select id="setVignette"><option value="1">On</option><option value="0">Off</option></select></label>
-      <label>VR HUD <select id="setHud"><option value="wrist">Wrist</option><option value="camera">Fixed</option></select></label>
-    </div>
+    <button id="playDesktop">Resume</button>
   </div>
   <script type="module" src="/src/main.js"></script>
 </body>

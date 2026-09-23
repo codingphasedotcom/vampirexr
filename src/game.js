@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { BlobShadows } from './shadows.js';
+import { toonUniforms } from './toon.js';
 import { Input } from './input.js';
 import { Player } from './player.js';
 import { EnemyManager, KINDS } from './enemies.js';
@@ -11,17 +13,19 @@ import { Particles } from './particles.js';
 import { Hud } from './hud.js';
 import { Menu } from './menu.js';
 import { Sfx } from './sfx.js';
-import { Wand, Gun } from './weapons.js';
+import { Music } from './music.js';
+import { Wand, Gun, WEAPONS } from './weapons.js';
 import { BOSSES, BossFx } from './bosses.js';
 import { Chests } from './chests.js';
 import { Minimap } from './minimap.js';
-import { getChoices } from './upgrades.js';
+import { getChoices, evolutionChoices } from './upgrades.js';
 import { World } from './world.js';
 import { LEVELS, levelById } from './levels/index.js';
 import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
 import { rand, fmtTime } from './utils.js';
 import { CastleSiege, confine } from './siege.js';
 import { settings, saveSettings } from './settings.js';
+import { TitleScreen } from './title.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
@@ -37,15 +41,30 @@ const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THRE
 const _col = { x: 0, z: 0 };
 const _kindColor = new THREE.Color();
 const PLAYER_RADIUS = 0.35;
+const DASH = { speed: 22, time: 0.2, cooldown: 1.6, iframes: 0.45 };
+const _lastMove = new THREE.Vector3(0, 0, -1);
 
-const INTRO = `Survive the horde. Aim your revolver; your magic weapons fire automatically.<br><br>
-<b>Desktop:</b> WASD + mouse, or a gamepad (A or Start to play, sticks to move/look, RT to shoot, A to pick, Start to pause). F toggles fullscreen.<br>
-<b>VR:</b> left stick to move, right stick to turn, hold trigger to shoot, point + trigger to pick upgrades.<br>
-<b>Hand tracking:</b> swing your arms to run, pinch to shoot or pick upgrades.<br>
-Survive 25 waves. Bosses arrive on waves 4, 8, 12, 17 and 25 — slay the Vampire Lord to win.<br>
-Choose <b>Castle Siege</b> in Level for a four-room castle assault with unlockable gates and a throne-room boss.<br>
-Golden light beams mark treasure chests: walk into one for a free upgrade.<br>
-Aim through enemy centers for <b>1.5× precision damage</b>. Cyan impacts confirm precision hits; pink confirms a kill.`;
+// Final desktop grade: saturation/contrast, level tint, vignette, a red chromatic pulse when hurt, faint grain.
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, uSaturation: { value: 1.12 }, uTint: { value: new THREE.Color(1, 1, 1) },
+    uHurt: { value: 0 }, uTime: { value: 0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uSaturation, uHurt, uTime; uniform vec3 uTint; varying vec2 vUv;
+    void main() {
+      vec2 c = vUv - 0.5;
+      float ab = 0.0025 + uHurt * 0.012;
+      vec3 col = vec3(texture2D(tDiffuse, vUv + c * ab).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - c * ab).b);
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, uSaturation);
+      col = (col - 0.5) * 1.06 + 0.5;
+      col *= uTint;
+      float v = smoothstep(0.95, 0.28, length(c * vec2(1.15, 1.0)));
+      col *= mix(0.55, 1.0, v);
+      col = mix(col, col * vec3(1.25, 0.55, 0.55), uHurt * (1.0 - v) * 1.4);
+      col += (fract(sin(dot(vUv * 913.0 + uTime, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.025;
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }`,
+};
 
 export class Game {
   constructor() {
@@ -69,6 +88,8 @@ export class Game {
     this.numbers = new DamageNumbers(this.scene);
     this.bossFx = new BossFx(this.scene);
     this.chests = new Chests(this.scene);
+    this.shadows = new BlobShadows(this.scene);
+    this.shake = 0;
     this.crosshair = document.getElementById('crosshair');
     this.playerLight = new THREE.PointLight(0xffc38a, this.world.level.playerLight, 11, 2);
     this.scene.add(this.playerLight);
@@ -87,6 +108,10 @@ export class Game {
     this.minimap = new Minimap(this.camera);
     this.menu = new Menu(this.scene, this.camera, this.input);
     this.sfx = new Sfx();
+    this.music = new Music(this.sfx);
+    this.music.enabled = settings.music;
+    this.dashT = 0; this.dashReady = 0; this.invulnUntil = 0;
+    this.stats = { damage: {} };
     this.weapons = [];
     this.boss = null;
     this.hpMul = 1;
@@ -95,14 +120,16 @@ export class Game {
     this.state = 'menu'; // menu | playing | levelup | gameover | paused
     this.time = 0;
 
-    // Bloom is desktop-only; inside the headset we render directly for framerate.
-    this.composer = new EffectComposer(this.renderer);
+    // Post-processing is desktop-only; inside the headset we render directly for framerate.
+    // The composer renders into a 4× MSAA target (the canvas' own antialiasing doesn't apply to render targets).
+    const rt = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, { type: THREE.HalfFloatType, samples: 4 });
+    this.composer = new EffectComposer(this.renderer, rt);
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.6, 0.72);
-    this.composer.addPass(this.bloom);
-    this.applyLevelLook();
     this.composer.addPass(new OutputPass());
+    this.grade = new ShaderPass(GradeShader);
+    this.composer.addPass(this.grade);
+    this.applyLevelLook();
 
     this.overlay = document.getElementById('overlay');
     this.ovTitle = document.getElementById('ovTitle');
@@ -120,7 +147,7 @@ export class Game {
       this.composer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    this.showOverlay('VAMPIRESXR', INTRO, 'Play on Desktop');
+    this.title.show(true);
     this.renderer.setAnimationLoop(() => this.loop());
   }
 
@@ -129,10 +156,7 @@ export class Game {
   bindUi() {
     this.playBtn.onclick = () => {
       if (this.state === 'paused') { if (this.input.usingPad) this.resume(); else this.input.requestPointerLock(); }
-      else { this.enterFullscreen(); this.start(); }
     };
-    const fsBtn = document.getElementById('fullscreenBtn');
-    if (fsBtn) fsBtn.onclick = () => this.toggleFullscreen();
     this.input.onKey = (code) => this.onKey(code);
     this.input.onHands = () => this.hud.toast('Hands: swing arms to run · pinch to pick', 5);
     this.input.onUnlockedClick = () => {
@@ -151,29 +175,34 @@ export class Game {
     });
   }
 
+  // The desktop front end. Settings changed here persist and apply immediately.
   bindSettings() {
-    const bind = (id, key, parse = (v) => v) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.value = String(typeof settings[key] === 'boolean' ? (settings[key] ? 1 : 0) : settings[key]);
-      el.onchange = () => { settings[key] = parse(el.value); saveSettings(); };
-    };
-    bind('setTurn', 'turn');
-    bind('setLevel', 'level');
-    bind('setVignette', 'vignette', (v) => v === '1');
-    bind('setHud', 'hud');
+    this.title = new TitleScreen({
+      levels: LEVELS, settings, sfx: this.sfx,
+      onFirstInput: () => { this.sfx.init(); this.music.start(); },
+      onPlay: () => { this.enterFullscreen(); this.start(); },
+      onEnterVR: () => this.enterVR(),
+      onFullscreen: () => this.toggleFullscreen(),
+      onLevel: (id) => { settings.level = id; saveSettings(); },
+      onSetting: (key, value) => {
+        settings[key] = value; saveSettings();
+        if (key === 'music') this.music.setEnabled(value);
+      },
+    });
   }
 
-  // Rebuilds the world when the chosen level differs from the one loaded; also syncs bloom and player light.
+  // Rebuilds the world when the chosen level differs from the one loaded; also syncs rim light, grade and player light.
   applyLevelLook() {
     const level = levelById(settings.level);
     if (this.world.level !== level) {
       this.world.dispose();
       this.world = new World(this.scene, level);
     }
-    this.bloom.strength = level.bloom.strength;
-    this.bloom.threshold = level.bloom.threshold;
     this.playerLight.intensity = level.playerLight;
+    toonUniforms.uRimColor.value.set(level.rimLight?.color ?? 0xa9b8ff);
+    toonUniforms.uRimStrength.value = level.rimLight?.strength ?? 0.6;
+    const gr = this.grade?.uniforms;
+    if (gr) { gr.uSaturation.value = level.grade?.saturation ?? 1.12; gr.uTint.value.set(level.grade?.tint ?? 0xffffff); }
   }
 
   cycleLevel() {
@@ -213,6 +242,8 @@ export class Game {
       { kind: 'passive', title: settings.hud === 'wrist' ? 'HUD: Wrist' : 'HUD: Fixed', sub: 'Display',
         desc: settings.hud === 'wrist' ? 'Stats float above your off-hand. Boss HP and alerts stay in view.' : 'Stats are locked to the bottom of your view.',
         apply: () => toggle('hud', ['wrist', 'camera']) },
+      { kind: 'passive', title: `Music: ${settings.music ? 'On' : 'Off'}`, sub: 'Audio',
+        desc: 'Procedural soundtrack that intensifies with the fight.', apply: () => { toggle('music', [true, false]); this.music.setEnabled(settings.music); } },
       { kind: 'weapon', title: 'Back', sub: '', desc: 'Return.', apply: back },
     ], (item) => item.apply(), true);
   }
@@ -235,32 +266,27 @@ export class Game {
   }
 
   showOverlay(title, msg, btn) {
-    // the logo image stands in for the title on the main menu; other screens (paused) show text
-    const isMain = title === 'VAMPIRESXR';
-    document.getElementById('logo').hidden = !isMain;
-    this.ovTitle.hidden = isMain;
     this.ovTitle.textContent = title;
     this.ovMsg.innerHTML = msg;
     this.playBtn.textContent = btn;
     this.overlay.classList.remove('hidden');
   }
 
+  async enterVR() {
+    try {
+      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
+      await this.renderer.xr.setSession(session);
+    } catch (err) { console.error('Could not start XR session', err); this.hud.toast('Could not start VR'); }
+  }
+
   setupXR() {
-    const holder = document.getElementById('vrButtonHolder');
-    if (!navigator.xr) { holder.innerHTML = '<small>WebXR not available in this browser</small>'; return; }
-    navigator.xr.isSessionSupported('immersive-vr').then((ok) => {
-      if (!ok) { holder.innerHTML = '<small>No VR headset detected</small>'; return; }
-      const b = document.createElement('button');
-      b.textContent = 'Enter VR';
-      b.onclick = async () => {
-        try {
-          const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
-          await this.renderer.xr.setSession(session);
-        } catch (err) { console.error('Could not start XR session', err); }
-      };
-      holder.appendChild(b);
-    });
+    if (!navigator.xr) this.title.setVR(false, 'WebXR not available in this browser');
+    else navigator.xr.isSessionSupported('immersive-vr')
+      .then((ok) => this.title.setVR(ok, ok ? '' : 'No VR headset detected'))
+      .catch(() => this.title.setVR(false, 'No VR headset detected'));
     this.renderer.xr.addEventListener('sessionstart', () => {
+      this.title.hide();
+      this.overlay.classList.add('hidden');
       this.hud.setMode(settings.hud);
       this.showVrMenu();
     });
@@ -268,12 +294,14 @@ export class Game {
       this.state = 'menu';
       this.menu.hide();
       this.hud.setMode('camera');
-      this.showOverlay('VAMPIRESXR', INTRO, 'Play on Desktop');
+      this.title.show();
     });
   }
 
   onKey(code) {
+    if (this.title.visible && !this.renderer.xr.isPresenting) { this.title.key(code); return; }
     if (code === 'KeyF' && !this.renderer.xr.isPresenting) { this.toggleFullscreen(); return; }
+    if (code === 'ShiftLeft' || code === 'ShiftRight') { this.tryDash(); return; }
     if (!this.menu.open) return;
     const m = /^(?:Digit|Numpad)([1-9])$/.exec(code);
     if (m) this.menu.pick(Number(m[1]) - 1);
@@ -284,6 +312,7 @@ export class Game {
 
   start() {
     this.sfx.init();
+    this.music.start();
     this.applyLevelLook();
     this.player.reset();
     this.siege = this.world.level.id === 'castle' ? new CastleSiege(this) : null;
@@ -300,6 +329,8 @@ export class Game {
     this.time = 0; this.spawnAcc = 0;
     this.wave = 0; this.waveBreak = 1.5; // first wave starts after a short breather
     this.pendingLevels = 0; this.hurtTimer = 0; this.slowUntil = 0;
+    this.dashT = 0; this.dashReady = 0; this.invulnUntil = 0;
+    this.stats = { damage: {} };
     this.hud.toastTimer = 0;
     this.rig.position.set(0, 0, 0);
     if (!this.renderer.xr.isPresenting) {
@@ -308,6 +339,7 @@ export class Game {
     }
     this.menu.hide();
     this.overlay.classList.add('hidden');
+    this.title.hide();
     this.clock.getDelta();
     this.state = 'playing';
     if (this.modelStatus) this.hud.toast(this.modelStatus, this.modelStatus.includes('failed') ? 8 : 3);
@@ -318,6 +350,9 @@ export class Game {
   openLevelUp() {
     this.state = 'levelup';
     this.sfx.levelup();
+    const p = this.player.pos;
+    this.particles.burst(p.x, 0.3, p.z, 0xffd166, 50, 5);
+    this.particles.burst(p.x, 1.4, p.z, 0x9fd8ff, 24, 3);
     this.menu.show('LEVEL UP!', `Level ${this.player.level} — choose an upgrade`, getChoices(this), (item) => {
       item.apply();
       this.pendingLevels--;
@@ -325,26 +360,71 @@ export class Game {
     }, this.renderer.xr.isPresenting);
   }
 
-  gameOver() {
+  // Run summary card: time, wave, level, kills and damage dealt per weapon.
+  statsCard() {
+    const p = this.player, names = Object.fromEntries(WEAPONS.map((W) => [W.id, W.title]));
+    const fmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v));
+    const rows = Object.entries(this.stats.damage).sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([id, v]) => `${names[id] || id}: ${fmt(v)}${this.weapons.find((w) => w.constructor.id === id)?.evolved ? ' ★' : ''}`);
+    const where = this.siege ? `Room ${this.siege.index + 1}/4` : `Wave ${this.wave}/${WAVES}`;
+    return { kind: 'stats', title: 'Run Stats', sub: where, disabled: true,
+      desc: `${fmtTime(this.time)} · Lv ${p.level} · ${p.kills} kills\n${rows.join('\n')}` };
+  }
+
+  endMenu(title, sub, againTitle, againDesc) {
     this.state = 'gameover';
+    this.menu.show(title, sub, [
+      { kind: 'bonus', title: againTitle, sub: '', desc: againDesc, apply: () => this.start() },
+      this.statsCard(),
+      { kind: 'passive', title: 'Main Menu', sub: '', desc: 'Change level or settings.', apply: () => this.toMainMenu() },
+    ], (item) => item.apply(), this.renderer.xr.isPresenting);
+  }
+
+  toMainMenu() {
+    this.enemies.reset(); this.gems.reset(); this.chests.reset(); this.bossFx.reset();
+    this.boss = null; this.music.intensity = 0.15;
+    if (this.renderer.xr.isPresenting) this.showVrMenu();
+    else { this.state = 'menu'; if (document.pointerLockElement) document.exitPointerLock(); this.title.show(); }
+  }
+
+  gameOver() {
     this.sfx.die();
     const p = this.player;
-    this.menu.show('YOU DIED', `Survived ${fmtTime(this.time)}  ·  Level ${p.level}  ·  ${p.kills} kills`,
-      [{ kind: 'bonus', title: 'Try Again', sub: '', desc: 'The night is long. Go again.' }],
-      () => this.start(), this.renderer.xr.isPresenting);
+    this.endMenu('YOU DIED', `Survived ${fmtTime(this.time)}  ·  Level ${p.level}  ·  ${p.kills} kills`, 'Try Again', 'The night is long. Go again.');
   }
 
   victory() {
-    this.state = 'gameover';
     this.sfx.levelup();
-    const p = this.player;
-    this.menu.show('VICTORY!', `The Vampire Lord is dust.  ${fmtTime(this.time)}  ·  ${p.kills} kills`,
-      [{ kind: 'bonus', title: 'Play Again', sub: '', desc: 'Dawn breaks. Until next night.' }],
-      () => this.start(), this.renderer.xr.isPresenting);
+    this.endMenu('VICTORY!', `The Vampire Lord is dust.  ${fmtTime(this.time)}  ·  ${this.player.kills} kills`, 'Play Again', 'Dawn breaks. Until next night.');
   }
 
+  onEvolve(w, E) {
+    const p = this.player.pos;
+    this.sfx.evolve();
+    this.hud.toast(`EVOLVED: ${E.title}!`, 3.5);
+    this.particles.burst(p.x, 1, p.z, 0xc77dff, 80, 6);
+    this.addShake(0.3);
+  }
+
+  // Dash: a short burst in the move direction (or forward) with invulnerability frames.
+  tryDash() {
+    if (this.state !== 'playing' || this.time < this.dashReady) return;
+    this.dashT = DASH.time;
+    this.dashReady = this.time + DASH.cooldown;
+    this.invulnUntil = this.time + DASH.iframes;
+    this.dashDir = _lastMove.clone();
+    this.sfx.dash();
+    this.input.rumble(0.3, 0.6, 90);
+    const p = this.player.pos;
+    this.particles.burst(p.x, 0.4, p.z, 0x9fd8ff, 18, 3);
+  }
+
+  addShake(v) { this.shake = Math.min(1, this.shake + v); }
+
   damagePlayer(amount, effect = null) {
+    if (this.time < this.invulnUntil) return;
     this.player.hurt(amount);
+    this.addShake(0.35);
     this.hud.hurt();
     this.sfx.hurt();
     this.input.rumble(0.8, 0.5, 150);
@@ -362,6 +442,7 @@ export class Game {
   // Central damage entry point so every weapon gets the same feedback (flash, numbers, sfx, gems, particles).
   hitEnemy(e, dmg, opts = {}) {
     if (e.dead) return;
+    if (opts.src) this.stats.damage[opts.src] = (this.stats.damage[opts.src] || 0) + Math.min(dmg, Math.max(0, e.hp));
     const died = this.enemies.damage(e, dmg);
     if (!opts.quiet) this.sfx.hit();
     this.numbers.spawn(e.x, e.t.y * (e.scale ?? 1) + 0.4, e.z, Math.round(dmg), opts.precision ? '#5ffff0' : died ? '#ffd166' : '#ffffff');
@@ -393,16 +474,26 @@ export class Game {
     }
     if (!xr) {
       this.input.pollGamepad(dt);
-      const face = this.input.padFace; this.input.padFace = -1; // A/Cross = 0
+      const ui = this.input.consumeUi();
+      const face = this.input.padFace; this.input.padFace = -1; // A/Cross = 0, B = 1
       const start = this.input.consumePadStart();
-      if (start && this.state === 'playing') {
+      if (this.title.visible) {
+        for (const a of ui) this.title.action(a === 'any' ? 'accept' : a);
+        this.input.consumePadNav();
+      } else if (start && this.state === 'playing') {
         this.state = 'paused';
         this.showOverlay('PAUSED', 'Press Start or A to resume.', 'Resume');
         if (document.pointerLockElement) document.exitPointerLock();
       } else if ((start || face === 0) && this.state === 'paused') this.resume();
-      else if ((start || face === 0) && this.state === 'menu' && !this.menu.open) { this.enterFullscreen(); this.start(); }
       else if (face === 0 && this.state === 'gameover') this.menu.pick(0);
+      else if (face === 1 && this.state === 'playing') this.tryDash();
     }
+    if (this.input.consumeSqueeze()) this.tryDash();
+    // soundtrack intensity follows the fight
+    const target = this.state === 'menu' ? 0.15 : this.state === 'playing' || this.state === 'levelup'
+      ? Math.min(1, 0.4 + this.enemies.alive / 260 + (this.boss ? 0.45 : 0)) : 0.3;
+    this.music.intensity += (target - this.music.intensity) * Math.min(1, dt * 0.8);
+    this.hud.dash = this.state === 'playing' ? Math.min(1, 1 - (this.dashReady - this.time) / DASH.cooldown) : 1;
     this.updateMovement(dt, xr);
     if (this.state === 'playing') this.tick(dt);
     else if (this.menu.open) this.menu.update(xr);
@@ -411,6 +502,12 @@ export class Game {
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
     for (const e of this.enemies.list) if (e.kind !== 'normal') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.9 * e.scale, _kindColor.set(KINDS[e.kind].color), 0.7);
+    this.enemies.outlinesVisible = !xr;
+    this.shadows.begin();
+    this.enemies.drawShadows(this.shadows);
+    for (const c of this.chests.list) this.shadows.add(c.x, c.z, 0.6, 0.5);
+    if (this.state !== 'menu') this.shadows.add(this.player.pos.x, this.player.pos.z, 0.42, 0.45);
+    this.shadows.end();
     this.particles.update(dt);
     this.numbers.update(dt);
     this.world.update(dt, fxTime.value, this.player.pos);
@@ -423,7 +520,16 @@ export class Game {
     this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');
     this.glow.end();
     if (xr) this.renderer.render(this.scene, this.camera);
-    else this.composer.render();
+    else if (this.title.visible) { /* the title art covers the canvas: save the GPU */ }
+    else {
+      // desktop-only camera shake (never in the headset: moving the view without the head moving is nauseating)
+      this.shake = Math.max(0, this.shake - dt * 2.2);
+      const k = this.shake * this.shake * 0.06;
+      this.camera.position.set(Math.sin(fxTime.value * 53) * k, 1.6 + Math.sin(fxTime.value * 47 + 1) * k, 0);
+      this.grade.uniforms.uHurt.value = this.hud.flash;
+      this.grade.uniforms.uTime.value = fxTime.value;
+      this.composer.render();
+    }
   }
 
   headPos() { return this.camera.getWorldPosition(_head); }
@@ -454,12 +560,22 @@ export class Game {
         if (_move.lengthSq() > 1) _move.normalize();
         const slow = this.slowUntil > this.time ? 0.55 : 1;
         this.rig.position.addScaledVector(_move, this.player.speed * slow * dt);
-        const h = this.headPos(), d = Math.hypot(h.x, h.z);
-        if (d > ARENA_RADIUS) {
-          const k = ARENA_RADIUS / d;
-          this.rig.position.x -= h.x * (1 - k);
-          this.rig.position.z -= h.z * (1 - k);
-        }
+        _lastMove.copy(_move).normalize();
+      } else if (this.dashT <= 0) {
+        this.camera.getWorldQuaternion(_q);
+        _lastMove.set(0, 0, -1).applyQuaternion(_q); _lastMove.y = 0; _lastMove.normalize();
+      }
+      if (this.dashT > 0) {
+        this.dashT -= dt;
+        this.rig.position.addScaledVector(this.dashDir, DASH.speed * dt);
+        moving = 1;
+        this.glow.add(this.player.pos.x, 0.8, this.player.pos.z, 1.2, _kindColor.set(0x9fd8ff), 0.5);
+      }
+      const h = this.headPos(), d = Math.hypot(h.x, h.z);
+      if (d > ARENA_RADIUS) {
+        const k = ARENA_RADIUS / d;
+        this.rig.position.x -= h.x * (1 - k);
+        this.rig.position.z -= h.z * (1 - k);
       }
     }
     // keep the player out of props (also nudges the rig if you physically lean into one in VR)
@@ -523,9 +639,9 @@ export class Game {
     this.chests.update(dt, p, () => this.openChest());
     p.heal(p.stats.regen * dt);
     this.hurtTimer -= dt;
-    if (contact > 0) {
+    if (contact > 0 && this.time >= this.invulnUntil) {
       p.hurt(contact);
-      if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); this.input.rumble(0.6, 0.4, 120); }
+      if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); this.input.rumble(0.6, 0.4, 120); this.addShake(0.2); }
     }
     if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
     if (this.state !== 'playing') return; // victory may have ended the run this frame
@@ -534,7 +650,8 @@ export class Game {
 
   // A chest hands out one random upgrade from the same pool as level-ups.
   openChest() {
-    const choices = getChoices(this);
+    const evo = evolutionChoices(this);
+    const choices = evo.length ? evo : getChoices(this);
     const item = choices[Math.floor(Math.random() * choices.length)];
     item.apply();
     this.hud.toast(`Chest: ${item.title} ${item.sub}`.trim(), 3);
@@ -597,7 +714,8 @@ export class Game {
   }
 
   spawnAt(type, angle, dist, hpMul, casters = 0) {
-    this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul, casters);
+    const e = this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul, casters);
+    if (e && !e.t.fly) this.particles.burst(e.x, 0.15, e.z, 0x2a1f3a, 8, 1.5); // grave dirt as it claws out of the ground
   }
 
   pickType(w) {

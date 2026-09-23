@@ -12,8 +12,20 @@ export const PASSIVES = [
   { id: 'armor',  title: 'Armor',        desc: 'Take 8% less damage.',           max: 5, apply: (p) => { p.stats.armor += 0.08; } },
 ];
 
-// Builds the three cards offered on level-up.
+// A maxed weapon plus its paired passive (any level) unlocks an evolution.
+export function evolutionChoices(game) {
+  const out = [];
+  for (const w of game.weapons) {
+    const E = w.constructor.evolution;
+    if (!E || w.evolved || !w.maxed || !(game.player.passives[E.passive] > 0)) continue;
+    out.push({ kind: 'evolve', title: E.title, sub: 'EVOLUTION', desc: E.desc, apply: () => { w.evolve(); game.onEvolve?.(w, E); } });
+  }
+  return out;
+}
+
+// Builds the three cards offered on level-up; an available evolution always takes the first slot.
 export function getChoices(game) {
+  const evolutions = evolutionChoices(game);
   const pool = [];
   for (const W of WEAPONS) {
     const owned = game.weapons.find((w) => w instanceof W);
@@ -24,7 +36,7 @@ export function getChoices(game) {
     const lvl = game.player.passives[P.id] || 0;
     if (lvl < P.max) pool.push({ kind: 'passive', title: P.title, sub: `Lv ${lvl + 1}`, desc: P.desc, apply: () => { P.apply(game.player); game.player.passives[P.id] = lvl + 1; } });
   }
-  const choices = shuffle(pool).slice(0, 3);
+  const choices = [...evolutions.slice(0, 1), ...shuffle(pool)].slice(0, 3);
   while (choices.length < 3) {
     choices.push({ kind: 'bonus', title: 'Roast Chicken', sub: 'Snack', desc: 'Heal 30 HP.', apply: () => game.player.heal(30) });
   }

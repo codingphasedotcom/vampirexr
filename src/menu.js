@@ -8,15 +8,15 @@ const FONT = 'system-ui, sans-serif';
 
 function cardTexture(item, hint) {
   const c = makeCanvas(256, 352), g = c.getContext('2d');
-  const accent = item.kind === 'weapon' ? '#ff4d6d' : item.kind === 'passive' ? '#4dd0ff' : '#ffd166';
-  g.fillStyle = '#17121f'; roundRect(g, 0, 0, 256, 352, 18); g.fill();
+  const accent = { weapon: '#ff4d6d', passive: '#4dd0ff', evolve: '#c77dff', stats: '#9a93ad' }[item.kind] || '#ffd166';
+  g.fillStyle = item.kind === 'evolve' ? '#241034' : '#17121f'; roundRect(g, 0, 0, 256, 352, 18); g.fill();
   g.strokeStyle = accent; g.lineWidth = 6; roundRect(g, 4, 4, 248, 344, 16); g.stroke();
   g.textAlign = 'center';
   g.fillStyle = accent; g.font = `bold 22px ${FONT}`; g.fillText(item.sub || '', 128, 48);
   g.fillStyle = '#fff'; g.font = `bold 28px ${FONT}`;
   const y = wrapText(g, item.title, 128, 96, 220, 32);
-  g.fillStyle = '#c9c4d6'; g.font = `20px ${FONT}`;
-  wrapText(g, item.desc, 128, y + 18, 218, 26);
+  g.fillStyle = '#c9c4d6'; g.font = item.kind === 'stats' ? `17px ${FONT}` : `20px ${FONT}`;
+  wrapText(g, item.desc, 128, y + 18, 218, item.kind === 'stats' ? 22 : 26);
   if (hint) { g.fillStyle = '#777'; g.font = `18px ${FONT}`; g.fillText(hint, 128, 330); }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -161,7 +161,7 @@ export class Menu {
 
   pick(i) {
     const item = this.items[i];
-    if (!item || !this.open) return;
+    if (!item || !this.open || item.disabled) return;
     this.hide();
     this.input.clearSelecting();
     this.onPick(item);

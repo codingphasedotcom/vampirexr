@@ -23,6 +23,8 @@ export function makeCanvas(w, h) {
 
 // Draws word-wrapped text and returns the y just below the last line.
 export function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+  const paras = String(text).split('\n');
+  if (paras.length > 1) { for (const p of paras) y = wrapText(ctx, p, x, y, maxWidth, lineHeight); return y; }
   let line = '';
   for (const w of String(text).split(' ')) {
     const test = line ? line + ' ' + w : w;
