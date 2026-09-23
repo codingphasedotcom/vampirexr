@@ -18,7 +18,8 @@ export const ENEMY_TYPES = {
             build: bruteGeometry, anim: ['SHAMBLE', { speed: 4.5, hip: 0.6 }],
             model: { url: '/models/brute.glb', height: 2.4, yaw: 0, rate: 1.9 } },
 };
-const MAX = { bat: 320, ghoul: 220, wraith: 120, brute: 60 };
+// Instance buffer sizes per type: big enough for top-down hordes (up to 800 alive) plus dying/split extras.
+const MAX = { bat: 800, ghoul: 800, wraith: 420, brute: 260 };
 const CELL = 2;
 const dummy = new THREE.Object3D();
 const _c = new THREE.Color();
@@ -51,6 +52,8 @@ export class EnemyManager {
     this.counts = {};
     this.grid = new Map();
     this.dying = [];          // killed enemies play a short collapse before leaving the render
+    this.cap = 200;           // max alive; the game sets it per mode (VR 200, desktop 300, top-down up to 800)
+    this.view = null;         // top-down: {x0,x1,z0,z1} — enemies outside aren't drawn
     this.outlines = {};       // ink-outline companions (desktop only; too many vertices for the Quest)
     this.outlinesVisible = true;
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
@@ -180,7 +183,7 @@ export class EnemyManager {
   // `casterChance` (0–1) is the share of spawns that become fire/ice casters; bosses summon with 0.
   // opts: { role: 'charger'|'bomber'|'splitter', elite: bool, scale, noSplit }
   spawn(type, x, z, hpMul = 1, casterChance = 0, opts = {}) {
-    if (this.list.length >= 200 || this.counts[type] >= MAX[type]) return null;
+    if (this.list.length >= this.cap || this.counts[type] >= MAX[type]) return null;
     const t = ENEMY_TYPES[type];
     const role = ROLES[opts.role] ? opts.role : null, R = role ? ROLES[role] : null;
     let scale = opts.scale ?? (Math.random() < 0.06 ? 1.7 : 0.75 + Math.random() * 0.6); // rare giants, otherwise 0.75–1.35
@@ -387,6 +390,8 @@ export class EnemyManager {
         if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
         return;
       }
+      const v = this.view;
+      if (v && (e.x < v.x0 || e.x > v.x1 || e.z < v.z0 || e.z > v.z1)) { if (!dying) e.walkTime = walkTime; return; } // off-screen
       const m = this.meshes[e.type], i = idx[e.type];
       if (i >= m.instanceMatrix.count) return;
       idx[e.type]++;
@@ -444,7 +449,9 @@ export class EnemyManager {
 
   // Soft ground shadows for everything alive or dying; flyers cast smaller, fainter ones.
   drawShadows(shadows) {
+    const v = this.view;
     const add = (e, k) => {
+      if (v && (e.x < v.x0 || e.x > v.x1 || e.z < v.z0 || e.z > v.z1)) return;
       const r = (e.t.boss ? e.size * 0.55 : e.size * 0.62) * k;
       shadows.add(e.x, e.z, e.t.fly ? r * 0.7 : r, (e.t.fly ? 0.4 : 0.75) * Math.min(1, e.age / 0.3));
     };

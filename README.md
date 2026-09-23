@@ -37,6 +37,8 @@ on the top-right minimap guide the route. The radar rotates with your view: enem
 
 ## Highlights
 
+- **Top-down mode** (desktop): Vampire Survivors-style overhead camera, mouse/right-stick aiming, hordes of up to 800.
+
 - Anime cel-shaded look, ink outlines, weather (City rain, Castle snow) and a Village that turns from noon to night.
 - Horde roles: chargers, bombers (chain reactions), splitters, elite champions, and mid-wave horde events.
 - Bosses with real attack animations, weapon evolutions, dash, procedural soundtrack, console-style title screen.

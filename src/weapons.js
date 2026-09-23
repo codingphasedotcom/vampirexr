@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { rand } from './utils.js';
 import { fxTime } from './fx.js';
-import { traceEnemy } from './aim.js';
+import { traceEnemy, traceFlat } from './aim.js';
 import { matcapMaterial } from './toon.js';
 
 const dummy = new THREE.Object3D();
@@ -456,6 +456,15 @@ export class Gun extends Weapon {
         this.fire(_o, _d, gm);
         fired = true;
       });
+    } else if (g.topdown) {
+      // top-down: fire along the aim direction from the hunter's muzzle; auto-fires while the gamepad auto-aims
+      if (g.input.mouseDown || g.input.padFire) {
+        g.avatar.muzzle.getWorldPosition(_o);
+        _d.copy(g.aimDir);
+        this.fire(_o, _d, null, true);
+        g.avatar.recoil();
+        fired = true;
+      }
     } else if (g.input.mouseDown || g.input.padFire) {
       // aim from the camera so the crosshair is exact; the tracer still starts at the muzzle
       g.camera.getWorldPosition(_o);
@@ -467,11 +476,11 @@ export class Gun extends Weapon {
     if (fired) this.timer = this.cd(1 / Gun.rate(this.level)) * (this.evolved ? 0.5 : 1);
   }
 
-  fire(origin, dir, gm) {
+  fire(origin, dir, gm, flat = false) {
     const g = this.game, dmg = this.dmg(Gun.damage(this.level)) * (this.evolved ? 1.3 : 1), pierce = this.evolved ? 8 : this.level >= 5 ? 3 : 1;
     const hits = [];
     for (const e of g.enemies.list) {
-      const hit = traceEnemy(origin, dir, e, g.time);
+      const hit = flat ? traceFlat(origin, dir, e) : traceEnemy(origin, dir, e, g.time);
       if (hit) hits.push(hit);
     }
     hits.sort((a, b) => a.t - b.t);
@@ -491,9 +500,9 @@ export class Gun extends Weapon {
       g.particles.burst(origin.x + dir.x * h.t, origin.y + dir.y * h.t, origin.z + dir.z * h.t, color, h.precision ? 10 : 6, 3);
       end = h.t + 0.3;
     }
-    gm.muzzle.getWorldPosition(_m);
+    if (gm) gm.muzzle.getWorldPosition(_m); else _m.copy(origin);
     this.tracers.push({ x0: _m.x, y0: _m.y, z0: _m.z, x1: origin.x + dir.x * end, y1: origin.y + dir.y * end, z1: origin.z + dir.z * end, life: 1, col: this.evolved ? HELL_COLOR : TRACER_COLOR });
-    gm.kick = 1;
+    if (gm) gm.kick = 1;
     g.sfx.gunshot();
     g.input.rumble(0.5, 0.2, 60);
   }
@@ -508,7 +517,7 @@ export class Gun extends Weapon {
       impact.mesh.scale.setScalar(0.08 + (1 - impact.life / 0.22) * 0.16);
       g.camera.getWorldQuaternion(impact.mesh.quaternion);
     }
-    this.deskGun.visible = !xr;
+    this.deskGun.visible = !xr && !g.topdown;
     for (let i = 0; i < this.guns.length; i++) this.guns[i].visible = xr && !!g.input.controllers[i].source;
     for (const gm of [...this.guns, this.deskGun]) {
       gm.kick = Math.max(0, gm.kick - dt * 8);

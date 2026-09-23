@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-23 (horde roles/elites/events, boss attack clips, weather, village day→night).
+> Last updated: 2026-09-23 (top-down mode with 800-enemy hordes).
 
 ## 1. What the game is
 
@@ -30,6 +30,7 @@ CLAUDE.md             working rules for AI agents (deploy, testing, docs)
 src/main.js           creates `new Game()` and exposes `window.game` (used for headless testing)
 src/game.js           THE orchestrator: renderer/XR setup, state machine, wave director, menus, damage routing, per-frame loop
 src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level, music
+src/avatar.js         HunterAvatar: procedural toon gunslinger shown only in top-down (walk cycle, aims, recoil)
 src/title.js          console-style desktop front end: splash, main menu, battlefield preview, settings, how-to (keys/mouse/gamepad)
 src/toon.js           cel-shading ramp, rim light, ink outlines (`toonShader`, `makeOutline`), stepped matcap for the revolver
 src/shadows.js        BlobShadows: one instanced draw of soft discs under creatures, chests and the player
@@ -292,6 +293,25 @@ including bosses. This is a center-mass precision bonus, not an anatomical heads
 `Gun` owns 12 reusable world-space impact rings (gold hit, cyan precision, pink kill), fading/expanding over 0.22 seconds;
 they are disposed with the weapon. Precision damage numbers are cyan. No camera shake, XR postprocessing or new assets.
 `Game.hitEnemy` ignores dead targets and positions damage numbers/death bursts at scaled height.
+
+## 13a. Top-down mode (desktop only; `settings.view = 'topdown'`, title → View)
+
+A Vampire Survivors-style overhead camera. VR ignores the setting (`game.topdown` is false while presenting).
+- **Camera** (`TOPDOWN` constant, `applyView()`): camera child of the rig at (0, 13.5, 8.5), pitched down, FOV 52; the rig stays
+  unrotated and *is* the player position (`bodyPos()`), so movement is screen-relative (W = up screen). Shake scales up.
+- **Avatar** (`avatar.js`): visible hunter; faces `game.aimDir`, walk/dash poses, `recoil()` on each shot.
+- **Aim** (`updateAim`): right stick (> 0.35) → mouse cursor on the y = 1.1 plane (`input.mouseNDC`, `mouseActive`) → auto-aim at the
+  nearest enemy within 16 m. A ground reticle marks the aim. The revolver fires from `avatar.muzzle` along the aim with
+  `traceFlat` (2D footprint test). Hold click / RT to fire; Space or Shift dash; Esc pauses (no pointer lock — `input.freeCursor`).
+- **Menus**: `menu.attachToCamera` parents the card group to the camera and picks with the mouse cursor.
+- **Hordes**: `enemies.cap` = 200 in VR, 300 desktop first-person, up to 800 top-down (`enemyCap()`); instance buffers are
+  800/800/420/260. Top-down waves are 4× larger, HP ×0.8, contact damage ×0.6, XP per kill ×0.4, spawning 15–21 m away (just
+  off-screen). Enemies outside `viewBounds()` are skipped when writing instances/shadows (`enemies.view`).
+- **Adaptive quality** (`adaptQuality`): if the smoothed frame time stays above 24 ms for ~2 s, enemy outlines turn off, then the
+  cap drops 100 at a time (floor 400).
+- **Scenery**: levels may set `topdownClip` (City 8 m, Castle 7.4 m); `World.setTopdown()` moves a material clipping plane so
+  tall towers/arches are cut away above that height (renderer `localClippingEnabled`), and thins fog / ground mist.
+- Hurt feedback everywhere is now a red edge vignette (radial texture), not a full-screen tint.
 
 ## 13. Known gaps / ideas not yet done
 

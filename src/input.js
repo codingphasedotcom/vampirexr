@@ -30,18 +30,24 @@ export class Input {
 
     window.addEventListener('keydown', (e) => { this.keys.add(e.code); this.onKey?.(e.code); });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    this.freeCursor = false;               // top-down: visible cursor, clicks shoot without pointer lock
+    this.mouseNDC = new THREE.Vector2();   // cursor in normalized device coords
+    this.mouseActive = false;              // cursor has moved since the gamepad was last used to aim
     dom.addEventListener('mousemove', (e) => {
+      const r = dom.getBoundingClientRect();
+      this.mouseNDC.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      this.mouseActive = true;
       if (document.pointerLockElement !== dom) return;
       this.yaw -= e.movementX * 0.0022;
       this.pitch = clamp(this.pitch - e.movementY * 0.0022, -1.45, 1.45);
     });
     dom.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      if (document.pointerLockElement === dom) { this.clickPressed = true; this.mouseDown = true; }
-      else this.onUnlockedClick?.();
+      if (document.pointerLockElement === dom || this.freeCursor) { this.clickPressed = true; this.mouseDown = true; this.mouseActive = true; }
+      if (document.pointerLockElement !== dom) this.onUnlockedClick?.();
     });
     window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseDown = false; });
-    document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== dom) this.mouseDown = false; });
+    document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement !== dom && !this.freeCursor) this.mouseDown = false; });
 
     this.controllers = [];
     this.hands = [];
@@ -90,7 +96,7 @@ export class Input {
     for (const g of pads) if (g && g.connected && g.mapping === 'standard') { gp = g; break; }
     if (!gp) for (const g of pads) if (g && g.connected) { gp = g; break; }
     this.pad = gp;
-    if (!gp) { this.padFire = false; return; }
+    if (!gp) { this.padFire = false; this.padLook = null; return; }
     const a = gp.axes, b = gp.buttons;
     const dz = (v) => (Math.abs(v) > 0.15 ? v : 0);
     const lx = dz(a[0] || 0), ly = dz(a[1] || 0), rx = dz(a[2] || 0), ry = dz(a[3] || 0);
@@ -98,6 +104,8 @@ export class Input {
     const edge = (name, now) => { const was = this._padHeld[name]; this._padHeld[name] = now; return now && !was; };
     if (lx || ly || rx || ry || b.some((x) => x.pressed)) this.usingPad = true;
     this.padMove = { x: lx, y: -ly };
+    this.padLook = { x: rx, y: ry }; // top-down aims with the right stick
+    if (Math.hypot(rx, ry) > 0.35) this.mouseActive = false;
     // right stick look: yaw 150°/s, pitch 100°/s at full tilt, with a gentle curve
     this.yaw -= rx * Math.abs(rx) * 2.6 * dt;
     this.pitch = clamp(this.pitch - ry * Math.abs(ry) * 1.8 * dt, -1.45, 1.45);

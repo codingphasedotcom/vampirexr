@@ -85,12 +85,21 @@ export class Menu {
     this.heading.material.map = headingTexture(title, sub);
     this.heading.material.needsUpdate = true;
 
-    this.camera.getWorldPosition(_pos);
-    this.camera.getWorldQuaternion(_q);
-    _fwd.set(0, 0, -1).applyQuaternion(_q);
-    this.group.position.set(_pos.x, 0, _pos.z);
-    this.group.rotation.set(0, Math.atan2(-_fwd.x, -_fwd.z), 0);
-    const hy = _pos.y;
+    let hy;
+    if (this.attachToCamera && !xr) {
+      // top-down: cards ride in front of the camera (world-space placement would sit far above the view)
+      this.camera.add(this.group);
+      this.group.position.set(0, 0.12, 0); this.group.rotation.set(0, 0, 0);
+      hy = 0;
+    } else {
+      this.scene.add(this.group);
+      this.camera.getWorldPosition(_pos);
+      this.camera.getWorldQuaternion(_q);
+      _fwd.set(0, 0, -1).applyQuaternion(_q);
+      this.group.position.set(_pos.x, 0, _pos.z);
+      this.group.rotation.set(0, Math.atan2(-_fwd.x, -_fwd.z), 0);
+      hy = _pos.y;
+    }
     this.heading.position.set(0, hy + 0.55, -1.8);
     this.logo.visible = logo; this.heading.visible = !logo;
     this.logo.position.set(0, hy + 0.85, -1.85);
@@ -114,7 +123,7 @@ export class Menu {
     this.open = true;
     this.padIndex = -1;
     this.input.setLasers(true);
-    this.crosshair?.classList.toggle('hidden', xr);
+    this.crosshair?.classList.toggle('hidden', xr || !!this.attachToCamera);
     this.input.consumeSelect(); this.input.consumeClick(); // drop stale presses
   }
 
@@ -141,7 +150,7 @@ export class Menu {
         else c.laser.scale.z = 6;
       }
     } else {
-      this.raycaster.setFromCamera(_center, this.camera);
+      this.raycaster.setFromCamera(this.attachToCamera && !document.pointerLockElement ? this.input.mouseNDC : _center, this.camera);
       const hit = this.raycaster.intersectObjects(meshes, false)[0];
       if (hit) { hovered = meshes.indexOf(hit.object); this.padIndex = -1; }
       // gamepad: d-pad / bumpers cycle cards when the gaze isn't on one

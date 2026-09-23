@@ -13,6 +13,7 @@ export const castle = {
   groundFog: { color: 0x9a8fb0, opacity: 0.25, height: 0.3 },
   rimLight: { color: 0xc9b8ff, strength: 0.55 },
   weather: { type: 'snow', count: 1400 },
+  topdownClip: 7.4,
   ground: () => tileTexture(256, 100, (g, s) => {
     g.fillStyle = '#484557'; g.fillRect(0, 0, s, s);
     for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {

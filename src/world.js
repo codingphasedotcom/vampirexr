@@ -368,12 +368,27 @@ export class World {
 
     this.ambient = level.build(g, this.colliders) || null;
     toonify(g);
+    // Top-down cutaway: tall scenery (city towers, castle arches) is clipped above `topdownClip` metres so it never
+    // hides the player from the overhead camera. Inactive (constant far away) in first-person / VR.
+    this.clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6);
+    if (level.topdownClip) g.traverse((o) => {
+      if (!o.isMesh || o.userData.keepMaterial) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && !m.isShaderMaterial) m.clippingPlanes = [this.clipPlane];
+    });
     this.groundFog = level.groundFog ? new GroundFog(g, level.groundFog) : null;
     this.weather = level.weather ? new Weather(g, level.weather) : null;
     this.playerLightNow = level.playerLight;
     this.thunderT = level.weather?.thunder ? 6 + Math.random() * 8 : Infinity;
     this.flash = 0;
     this.baseHemi = level.hemi.intensity;
+  }
+
+  // Top-down sees the whole mist sheet and looks through 20 m of fog: thin both so the battlefield stays readable.
+  setTopdown(on) {
+    this.clipPlane.constant = on && this.level.topdownClip ? this.level.topdownClip : 1e6;
+    this.fogScale = on ? 0.45 : 1;
+    if (!this.level.dayCycle) this.scene.fog.density = this.level.fog.density * this.fogScale;
+    if (this.groundFog) this.groundFog.mesh.material.uniforms.uOpacity.value = this.level.groundFog.opacity * (on ? 0.35 : 1);
   }
 
   // Day → sunset → night for levels with a `dayCycle` (u = 0..1). Lerps sky, fog, lights, sun height and stars.
@@ -386,7 +401,7 @@ export class World {
     const f = (k) => A[k] + (B[k] - A[k]) * t;
     const su = this.sky.material.uniforms;
     lerpHex(su.uTop.value, A.top, B.top, t); lerpHex(su.uHorizon.value, A.horizon, B.horizon, t);
-    lerpHex(this.scene.fog.color, A.fog, B.fog, t); this.scene.fog.density = f('fogDensity');
+    lerpHex(this.scene.fog.color, A.fog, B.fog, t); this.scene.fog.density = f('fogDensity') * (this.fogScale ?? 1);
     lerpHex(this.hemi.color, A.hemiSky, B.hemiSky, t); lerpHex(this.hemi.groundColor, A.hemiGround, B.hemiGround, t);
     this.baseHemi = f('hemi');
     lerpHex(this.key.color, A.keyColor, B.keyColor, t); this.key.intensity = f('key');

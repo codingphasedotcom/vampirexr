@@ -14,3 +14,16 @@ export function traceEnemy(origin, dir, enemy, time = 0, range = 60) {
   if (t > range) return null;
   return { e: enemy, t, precision: distanceSq <= (radius * 0.45) ** 2 };
 }
+
+// Top-down aim: the shot travels horizontally, so test against each enemy's footprint circle in the ground plane.
+export function traceFlat(origin, dir, enemy, range = 40) {
+  if (enemy.dead) return null;
+  const x = enemy.x - origin.x, z = enemy.z - origin.z;
+  const len = Math.hypot(dir.x, dir.z) || 1, ux = dir.x / len, uz = dir.z / len;
+  const along = x * ux + z * uz;
+  const radius = Math.max(0.45, enemy.size * 0.6);
+  const off = Math.abs(x * uz - z * ux);
+  if (off > radius || along < -radius || along > range) return null;
+  const t = Math.max(0, along - Math.sqrt(radius * radius - off * off));
+  return { e: enemy, t, precision: off <= radius * 0.45 };
+}

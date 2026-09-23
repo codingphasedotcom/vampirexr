@@ -26,10 +26,14 @@ import { rand, fmtTime } from './utils.js';
 import { CastleSiege, confine } from './siege.js';
 import { settings, saveSettings } from './settings.js';
 import { TitleScreen } from './title.js';
+import { HunterAvatar } from './avatar.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
-const MAX_ENEMIES = 200; // hard cap on monsters alive at once
+const MAX_ENEMIES = 200; // alive cap in VR (Quest budget); desktop raises it via enemyCap()
+// Top-down (desktop only): a Vampire Survivors-style camera over a visible hunter, with much bigger hordes of weaker monsters.
+const TOPDOWN = { height: 13.5, back: 8.5, fov: 52, cap: 800, horde: 4, hp: 0.8, dmg: 0.6, xp: 0.4, spawnMin: 15, spawnMax: 21 };
+const _plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.1), _ray = new THREE.Raycaster(), _aimHit = new THREE.Vector3();
 const WAVES = 25;
 const BOSS_WAVES = { 4: 'Bat Lord', 8: 'Grave Golem', 12: 'Necromancer', 17: 'Wraith Queen', 25: 'Vampire Lord' };
 const waveCount = (w) => Math.min(1500, Math.floor(30 * Math.pow(1.28, w - 1))); // 30 → 86 (w5) → 273 (w10); late waves stream at the alive cap
@@ -77,6 +81,7 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.xr.enabled = true;
+    this.renderer.localClippingEnabled = true; // top-down cutaway of tall scenery
     this.renderer.xr.setReferenceSpaceType('local-floor');
     document.body.appendChild(this.renderer.domElement);
 
@@ -95,6 +100,13 @@ export class Game {
     this.chests = new Chests(this.scene);
     this.shadows = new BlobShadows(this.scene);
     this.shake = 0;
+    this.avatar = new HunterAvatar(this.scene);
+    this.aimDir = new THREE.Vector3(0, 0, -1); this.aimMode = 'auto';
+    this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.35, 0.45, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xff4d6d, transparent: true, opacity: 0.85, depthWrite: false }));
+    this.reticle.visible = false; this.reticle.renderOrder = 7;
+    this.scene.add(this.reticle);
+    this.frameAvg = 16; this.slowFrames = 0;
     this.crosshair = document.getElementById('crosshair');
     this.playerLight = new THREE.PointLight(0xffc38a, this.world.level.playerLight, 11, 2);
     this.scene.add(this.playerLight);
@@ -160,11 +172,12 @@ export class Game {
 
   bindUi() {
     this.playBtn.onclick = () => {
-      if (this.state === 'paused') { if (this.input.usingPad) this.resume(); else this.input.requestPointerLock(); }
+      if (this.state === 'paused') { if (this.input.usingPad || this.topdown) this.resume(); else this.input.requestPointerLock(); }
     };
     this.input.onKey = (code) => this.onKey(code);
     this.input.onHands = () => this.hud.toast('Hands: swing arms to run · pinch to pick', 5);
     this.input.onUnlockedClick = () => {
+      if (this.topdown) return; // top-down plays with a free cursor
       if (this.state === 'levelup' || this.state === 'gameover') this.input.requestPointerLock();
     };
     document.addEventListener('pointerlockchange', () => {
@@ -203,6 +216,7 @@ export class Game {
       this.world.dispose();
       this.world = new World(this.scene, level);
     }
+    this.world.setTopdown(this.topdown);
     this.playerLight.intensity = level.playerLight;
     toonUniforms.uRimColor.value.set(level.rimLight?.color ?? 0xa9b8ff);
     toonUniforms.uRimStrength.value = level.rimLight?.strength ?? 0.6;
@@ -306,7 +320,9 @@ export class Game {
   onKey(code) {
     if (this.title.visible && !this.renderer.xr.isPresenting) { this.title.key(code); return; }
     if (code === 'KeyF' && !this.renderer.xr.isPresenting) { this.toggleFullscreen(); return; }
-    if (code === 'ShiftLeft' || code === 'ShiftRight') { this.tryDash(); return; }
+    if (code === 'ShiftLeft' || code === 'ShiftRight' || (code === 'Space' && this.topdown && this.state === 'playing')) { this.tryDash(); return; }
+    if (code === 'Escape' && this.topdown && this.state === 'playing') { this.state = 'paused'; this.showOverlay('PAUSED', 'Press Esc, Start or click Resume.', 'Resume'); return; }
+    if (code === 'Escape' && this.topdown && this.state === 'paused') { this.resume(); return; }
     if (!this.menu.open) return;
     const m = /^(?:Digit|Numpad)([1-9])$/.exec(code);
     if (m) this.menu.pick(Number(m[1]) - 1);
@@ -338,15 +354,18 @@ export class Game {
     this.stats = { damage: {} };
     this.hud.toastTimer = 0;
     this.rig.position.set(0, 0, 0);
+    this.tdCap = TOPDOWN.cap; this.enemies.outlinesAllowed = true; this.slowFrames = 0;
+    this.enemies.cap = this.enemyCap();
     if (!this.renderer.xr.isPresenting) {
       this.rig.rotation.y = 0; this.input.yaw = 0; this.input.pitch = 0;
-      this.input.requestPointerLock();
+      if (!this.topdown) this.input.requestPointerLock();
     }
     this.menu.hide();
     this.overlay.classList.add('hidden');
     this.title.hide();
     this.clock.getDelta();
     this.state = 'playing';
+    this.applyView();
     if (this.modelStatus) this.hud.toast(this.modelStatus, this.modelStatus.includes('failed') ? 8 : 3);
   }
 
@@ -453,7 +472,7 @@ export class Game {
     this.numbers.spawn(e.x, e.t.y * (e.scale ?? 1) + 0.4, e.z, Math.round(dmg), opts.precision ? '#5ffff0' : died ? '#ffd166' : '#ffffff');
     if (died) {
       this.player.kills++;
-      this.gems.spawn(e.x, e.z, e.xp ?? e.t.xp);
+      this.gems.spawn(e.x, e.z, (e.xp ?? e.t.xp) * (this.topdown ? TOPDOWN.xp : 1)); // 4x the monsters, so less XP each
       if (e.t.boss) { for (let i = 0; i < 3; i++) this.gems.spawnHeal(e.x + rand(-1.5, 1.5), e.z + rand(-1.5, 1.5)); }
       else if (Math.random() < 0.05) this.gems.spawnHeal(e.x, e.z);
       this.particles.burst(e.x, e.t.y * (e.scale ?? 1), e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
@@ -516,6 +535,7 @@ export class Game {
     this.music.intensity += (target - this.music.intensity) * Math.min(1, dt * 0.8);
     this.hud.dash = this.state === 'playing' ? Math.min(1, 1 - (this.dashReady - this.time) / DASH.cooldown) : 1;
     this.updateMovement(dt, xr);
+    if (this.topdown && this.state !== 'menu') this.updateAim(dt);
     if (this.state === 'playing') this.tick(dt);
     else if (this.menu.open) this.menu.update(xr);
     if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
@@ -533,7 +553,7 @@ export class Game {
       if (e.role === 'bomber') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.7 + (e.fuse > 0 ? 0.6 : 0), _kindColor.set(0xff8a2a), e.fuse > 0 ? 1.2 : 0.55);
       if (e.warn > 0.3 && e.role === 'charger') this.glow.add(e.x, e.t.y * e.scale, e.z, 1.4 * e.scale, _kindColor.set(0xff3050), e.warn * 0.8);
     }
-    this.enemies.outlinesVisible = !xr;
+    this.enemies.outlinesVisible = !xr && this.enemies.outlinesAllowed !== false;
     this.shadows.begin();
     this.enemies.drawShadows(this.shadows);
     for (const c of this.chests.list) this.shadows.add(c.x, c.z, 0.6, 0.5);
@@ -550,15 +570,23 @@ export class Game {
     this.minimap.mesh.visible = !inMenu;
     this.hud.update(dt, this.player, this.time, this.boss, this.waveInfo());
     this.minimap.update(dt, this);
-    this.crosshair?.classList.toggle('hidden', xr || this.state === 'menu' || this.state === 'paused');
+    this.crosshair?.classList.toggle('hidden', xr || this.topdown || this.state === 'menu' || this.state === 'paused');
+    if (this.topdown) {
+      this.avatar.root.visible = this.state !== 'menu';
+      this.avatar.update(dt, this.player.pos, this.aimDir, this.state === 'playing' ? Math.min(1, this.moving ?? 0) : 0, this.dashT > 0);
+      this.enemies.view = this.viewBounds();
+      this.adaptQuality(dt);
+    } else this.enemies.view = null;
+    this.enemies.cap = this.enemyCap();
     this.glow.end();
     if (xr) this.renderer.render(this.scene, this.camera);
     else if (this.title.visible) { /* the title art covers the canvas: save the GPU */ }
     else {
       // desktop-only camera shake (never in the headset: moving the view without the head moving is nauseating)
       this.shake = Math.max(0, this.shake - dt * 2.2);
-      const k = this.shake * this.shake * 0.06;
-      this.camera.position.set(Math.sin(fxTime.value * 53) * k, 1.6 + Math.sin(fxTime.value * 47 + 1) * k, 0);
+      const k = this.shake * this.shake * (this.topdown ? 0.25 : 0.06);
+      const [by, bz] = this.topdown ? [TOPDOWN.height, TOPDOWN.back] : [1.6, 0];
+      this.camera.position.set(Math.sin(fxTime.value * 53) * k, by + Math.sin(fxTime.value * 47 + 1) * k, bz);
       this.grade.uniforms.uHurt.value = this.hud.flash;
       this.grade.uniforms.uTime.value = fxTime.value;
       this.composer.render();
@@ -567,12 +595,55 @@ export class Game {
 
   headPos() { return this.camera.getWorldPosition(_head); }
 
+  // True while a desktop top-down run (or its menus) is active. VR is always first-person.
+  get topdown() { return settings.view === 'topdown' && !this.renderer.xr.isPresenting; }
+
+  // Where the player's body is: the headset/camera in first-person, the rig origin in top-down.
+  bodyPos() { return this.topdown ? _head.set(this.rig.position.x, 0, this.rig.position.z) : this.headPos(); }
+
+  enemyCap() { return this.renderer.xr.isPresenting ? MAX_ENEMIES : this.topdown ? this.tdCap ?? TOPDOWN.cap : 300; }
+
+  // Configure camera / avatar / cursor for the current view mode.
+  applyView() {
+    const td = this.topdown;
+    this.camera.fov = td ? TOPDOWN.fov : 70;
+    this.camera.updateProjectionMatrix();
+    this.rig.rotation.set(0, td ? 0 : this.input.yaw, 0);
+    if (td) { this.camera.position.set(0, TOPDOWN.height, TOPDOWN.back); this.camera.rotation.set(-Math.atan2(TOPDOWN.height, TOPDOWN.back) + 0.08, 0, 0); }
+    else { this.camera.position.set(0, 1.6, 0); this.camera.rotation.set(this.input.pitch, 0, 0); }
+    this.avatar.root.visible = td && this.state !== 'menu';
+    this.input.freeCursor = td;
+    this.menu.attachToCamera = td;
+    this.world.setTopdown?.(td);
+    this.renderer.domElement.style.cursor = td ? 'crosshair' : '';
+    this.reticle.visible = td;
+  }
+
+  // Top-down aim: mouse cursor on the ground, else the right stick, else auto-aim at the nearest enemy.
+  updateAim(dt) {
+    const p = this.player.pos, look = this.input.padLook;
+    if (look && Math.hypot(look.x, look.y) > 0.35) { this.aimDir.set(look.x, 0, look.y).normalize(); this.aimMode = 'pad'; }
+    else if (this.input.mouseActive) {
+      _ray.setFromCamera(this.input.mouseNDC, this.camera);
+      if (_ray.ray.intersectPlane(_plane, _aimHit)) {
+        const dx = _aimHit.x - p.x, dz = _aimHit.z - p.z;
+        if (Math.hypot(dx, dz) > 0.3) { this.aimDir.set(dx, 0, dz).normalize(); this.aimMode = 'mouse'; }
+      }
+    } else if (this.input.padFire || this.aimMode !== 'mouse') {
+      const t = this.enemies.nearestN(p, 16, 1)[0];
+      if (t) { this.aimDir.set(t.x - p.x, 0, t.z - p.z).normalize(); this.aimMode = 'auto'; }
+    }
+    const reach = this.aimMode === 'mouse' ? Math.min(14, Math.hypot(_aimHit.x - p.x, _aimHit.z - p.z)) : 6;
+    this.reticle.position.set(p.x + this.aimDir.x * reach, 0.06, p.z + this.aimDir.z * reach);
+    this.reticle.rotation.z += dt * 2;
+  }
+
   updateMovement(dt, xr) {
     let moving = 0, turning = 0;
-    if (!xr) {
+    if (!xr && !this.topdown) {
       this.rig.rotation.y = this.input.yaw;
       this.camera.rotation.x = this.input.pitch;
-    } else {
+    } else if (xr) {
       this.input.updateArmSwing(dt);
       if (settings.turn === 'snap') {
         const snap = this.input.getSnapTurn();
@@ -595,8 +666,8 @@ export class Game {
         this.rig.position.addScaledVector(_move, this.player.speed * slow * dt);
         _lastMove.copy(_move).normalize();
       } else if (this.dashT <= 0) {
-        this.camera.getWorldQuaternion(_q);
-        _lastMove.set(0, 0, -1).applyQuaternion(_q); _lastMove.y = 0; _lastMove.normalize();
+        if (this.topdown) _lastMove.copy(this.aimDir);
+        else { this.camera.getWorldQuaternion(_q); _lastMove.set(0, 0, -1).applyQuaternion(_q); _lastMove.y = 0; _lastMove.normalize(); }
       }
       if (this.dashT > 0) {
         this.dashT -= dt;
@@ -604,7 +675,7 @@ export class Game {
         moving = 1;
         this.glow.add(this.player.pos.x, 0.8, this.player.pos.z, 1.2, _kindColor.set(0x9fd8ff), 0.5);
       }
-      const h = this.headPos(), d = Math.hypot(h.x, h.z);
+      const h = this.bodyPos(), d = Math.hypot(h.x, h.z);
       if (d > ARENA_RADIUS) {
         const k = ARENA_RADIUS / d;
         this.rig.position.x -= h.x * (1 - k);
@@ -612,15 +683,16 @@ export class Game {
       }
     }
     // keep the player out of props (also nudges the rig if you physically lean into one in VR)
-    const h = this.headPos();
+    const h = this.bodyPos();
     this.world.colliders.resolve(h.x, h.z, PLAYER_RADIUS, _col);
-    if (_col.x !== h.x || _col.z !== h.z) { this.rig.position.x += _col.x - h.x; this.rig.position.z += _col.z - h.z; this.headPos(); }
+    if (_col.x !== h.x || _col.z !== h.z) { this.rig.position.x += _col.x - h.x; this.rig.position.z += _col.z - h.z; }
     if (this.siege) {
       const limited = this.siege.constrainPlayer(_col.x, _col.z);
       this.rig.position.x += limited.x - _col.x; this.rig.position.z += limited.z - _col.z;
       _col.x = limited.x; _col.z = limited.z;
     }
     this.player.pos.set(_col.x, 0, _col.z);
+    this.moving = moving;
     this.hud.setComfort(xr && settings.vignette ? Math.min(1, moving * 0.85 + turning * 0.9) : 0);
   }
 
@@ -676,7 +748,7 @@ export class Game {
     p.heal(p.stats.regen * dt);
     this.hurtTimer -= dt;
     if (contact > 0 && this.time >= this.invulnUntil) {
-      p.hurt(contact);
+      p.hurt(contact * (this.topdown ? TOPDOWN.dmg : 1));
       if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); this.input.rumble(0.6, 0.4, 120); this.addShake(0.2); }
     }
     if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
@@ -733,7 +805,7 @@ export class Game {
 
   // Mid-wave set pieces: a ring closing in, a bat swarm, a charger stampede, or an elite with an escort.
   hordeEvent(kind) {
-    const p = this.player.pos, w = this.wave, room = () => MAX_ENEMIES - this.enemies.alive;
+    const p = this.player.pos, w = this.wave, room = () => this.enemies.cap - this.enemies.alive;
     const add = (type, x, z, opts = {}) => { if (room() > 0) this.enemies.spawn(type, x, z, this.hpMul, 0, opts); };
     const dir = rand(0, Math.PI * 2);
     if (kind === 'encircle') {
@@ -757,17 +829,35 @@ export class Game {
     this.sfx.roar();
   }
 
+  // World-space rectangle the top-down camera can see (padded), used to skip drawing off-screen enemies.
+  viewBounds() {
+    const p = this.player.pos, a = this.camera.aspect;
+    return { x0: p.x - 11 * Math.max(1, a) - 3, x1: p.x + 11 * Math.max(1, a) + 3, z0: p.z - 17, z1: p.z + 10 };
+  }
+
+  // Keeps the huge top-down hordes smooth: if frames run long for ~2 s, drop enemy outlines, then lower the cap.
+  adaptQuality(dt) {
+    if (this.state !== 'playing') return;
+    this.frameAvg += (dt * 1000 - this.frameAvg) * 0.05;
+    this.slowFrames = this.frameAvg > 24 ? this.slowFrames + dt : Math.max(0, this.slowFrames - dt * 0.5);
+    if (this.slowFrames > 2) {
+      this.slowFrames = 0;
+      if (this.enemies.outlinesAllowed) this.enemies.outlinesAllowed = false;
+      else if (this.tdCap > 400) this.tdCap -= 100;
+    }
+  }
+
   // ---------- waves ----------
 
   startWave(w) {
     this.wave = w;
-    this.waveTotal = BOSS_WAVES[w] ? Math.ceil(waveCount(w) * 0.6) : waveCount(w);
+    this.waveTotal = Math.ceil((BOSS_WAVES[w] ? waveCount(w) * 0.6 : waveCount(w)) * (this.topdown ? TOPDOWN.horde : 1));
     this.waveSpawned = 0;
     this.waveTimer = 0;
     this.spawnAcc = 0;
     this.waveRate = Math.max(2, this.waveTotal / 18); // spread the wave over ~18 s
     this.eventAt = w >= 3 && !BOSS_WAVES[w] ? rand(9, 16) : Infinity;
-    this.hpMul = waveHpMul(w);
+    this.hpMul = waveHpMul(w) * (this.topdown ? TOPDOWN.hp : 1); // top-down: more, weaker monsters
     const bossName = BOSS_WAVES[w];
     if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
     this.hud.toast(bossName ? `WAVE ${w} — ${bossName.toUpperCase()}` : `WAVE ${w}`, 3);
@@ -792,12 +882,12 @@ export class Game {
     if (this.waveTimer >= this.eventAt) { this.eventAt = Infinity; this.hordeEvent(HORDE_EVENTS[(this.wave - 3) % HORDE_EVENTS.length]); }
     if (this.waveSpawned < this.waveTotal) {
       this.spawnAcc += this.waveRate * dt;
-      while (this.spawnAcc >= 1 && this.waveSpawned < this.waveTotal && this.enemies.alive < MAX_ENEMIES) {
+      while (this.spawnAcc >= 1 && this.waveSpawned < this.waveTotal && this.enemies.alive < this.enemies.cap) {
         this.spawnAcc -= 1;
-        this.spawnAt(this.pickType(this.wave), rand(0, Math.PI * 2), rand(18, 26), this.hpMul, casterChance(this.wave));
+        this.spawnAt(this.pickType(this.wave), rand(0, Math.PI * 2), this.topdown ? rand(TOPDOWN.spawnMin, TOPDOWN.spawnMax) : rand(18, 26), this.hpMul, casterChance(this.wave));
         this.waveSpawned++;
       }
-      if (this.enemies.alive >= MAX_ENEMIES) this.spawnAcc = Math.min(this.spawnAcc, 1);
+      if (this.enemies.alive >= this.enemies.cap) this.spawnAcc = Math.min(this.spawnAcc, 1);
     }
     // wave is over once everything has spawned and died (a couple of stragglers, or 2 minutes, won't hold it up)
     const cleared = !this.boss && ((this.waveSpawned >= this.waveTotal && this.enemies.alive <= 2) || this.waveTimer > waveTimeLimit(this.wave));

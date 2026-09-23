@@ -59,6 +59,7 @@ export const city = {
   groundFog: { color: 0x3a3048, opacity: 0.35, height: 0.3 },
   rimLight: { color: 0x8fd8ff, strength: 0.7 },
   weather: { type: 'rain', count: 1800, thunder: true },
+  topdownClip: 8,
   ground: pavementTexture,
   build(group, col) {
     // roads: a grid of asphalt strips with dashed centre lines
@@ -80,7 +81,7 @@ export const city = {
 
     // buildings fill the blocks between streets; the block around the spawn stays open
     const winTex = windowTexture();
-    const bMat = new THREE.MeshLambertMaterial({ map: winTex, emissiveMap: winTex, emissive: 0xffffff, emissiveIntensity: 0.9 });
+    const bMat = new THREE.MeshLambertMaterial({ map: winTex, emissiveMap: winTex, emissive: 0xffffff, emissiveIntensity: 0.9, side: THREE.DoubleSide }); // double-sided so top-down cutaways show walls
     const variants = [[10, 14, 10], [14, 26, 12], [12, 40, 12], [16, 20, 16]];
     const meshes = variants.map(([w, h, d]) => new THREE.InstancedMesh(buildingGeometry(w, h, d), bMat, 40));
     const counts = variants.map(() => 0);

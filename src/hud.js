@@ -19,9 +19,14 @@ export class Hud {
     this.mesh.renderOrder = 999;
     camera.add(this.mesh);
 
+    // hurt feedback: red creeping in from the screen edges (a clear centre keeps the fight readable)
+    const hc = makeCanvas(256, 256), hg = hc.getContext('2d');
+    const hgrad = hg.createRadialGradient(128, 128, 40, 128, 128, 128);
+    hgrad.addColorStop(0, 'rgba(255,32,32,0)'); hgrad.addColorStop(0.55, 'rgba(255,32,32,0.25)'); hgrad.addColorStop(1, 'rgba(255,32,32,1)');
+    hg.fillStyle = hgrad; hg.fillRect(0, 0, 256, 256);
     this.vignette = new THREE.Mesh(
-      new THREE.PlaneGeometry(6, 6),
-      new THREE.MeshBasicMaterial({ color: 0xff2020, transparent: true, opacity: 0, depthTest: false, depthWrite: false }),
+      new THREE.PlaneGeometry(3.4, 2.3),
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(hc), transparent: true, opacity: 0, depthTest: false, depthWrite: false }),
     );
     this.vignette.position.z = -1;
     this.vignette.renderOrder = 998;

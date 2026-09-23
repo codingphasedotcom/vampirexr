@@ -15,6 +15,10 @@ const HOWTO = `
       <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · mouse look</p>
       <p><kbd>Click</kbd> hold to shoot · <kbd>Shift</kbd> dash</p>
       <p><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> pick upgrade · <kbd>Esc</kbd> pause</p></div>
+    <div class="t-card"><h3>Top-Down View</h3>
+      <p><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · mouse aims the revolver</p>
+      <p><kbd>Click</kbd> shoot · <kbd>Space</kbd>/<kbd>Shift</kbd> dash · <kbd>Esc</kbd> pause</p>
+      <p>Gamepad: right stick aims, <kbd>RT</kbd> fires (auto-aims if the stick is idle)</p></div>
     <div class="t-card"><h3>Gamepad</h3>
       <p>Left stick move · right stick look</p>
       <p><kbd>RT</kbd> shoot · <kbd>B</kbd> dash</p>
@@ -119,12 +123,13 @@ export class TitleScreen {
       { label: 'Comfort Vignette', value: onOff(s.vignette), cycle: () => this.onSetting('vignette', !s.vignette) },
       { label: 'Music', value: onOff(s.music), cycle: () => this.onSetting('music', !s.music) },
       { label: 'VR HUD', value: s.hud === 'wrist' ? 'Wrist' : 'Fixed', cycle: () => this.onSetting('hud', s.hud === 'wrist' ? 'camera' : 'wrist') },
-      { label: 'Back', back: true, act: () => this.go('main', 4) },
+      { label: 'Back', back: true, act: () => this.go('main', 5) },
     ];
-    if (this.screen === 'howto') return [{ label: 'Back', back: true, act: () => this.go('main', 3) }];
+    if (this.screen === 'howto') return [{ label: 'Back', back: true, act: () => this.go('main', 4) }];
     return [
       { label: 'Play', big: true, act: () => { this.confirmSound(); this.onPlay(); } },
       { label: 'Battlefield', value: L.name, cycle: (d) => this.cycleLevel(d) },
+      { label: 'View', value: s.view === 'topdown' ? 'Top-Down' : 'First Person', cycle: () => this.onSetting('view', s.view === 'topdown' ? 'fps' : 'topdown') },
       { label: 'Enter VR', disabled: !this.vr.ok, note: this.vr.ok ? '' : this.vr.reason, act: () => { this.confirmSound(); this.onEnterVR(); } },
       { label: 'How to Play', act: () => this.go('howto') },
       { label: 'Settings', act: () => this.go('settings') },
@@ -223,7 +228,7 @@ export class TitleScreen {
         <div class="t-lv-kicker">Battlefield</div>
         <div class="t-lv-name">${L.name}</div>
         <div class="t-lv-desc">${L.desc}</div>
-        <div class="t-lv-tags">${meta.tags.map((t) => `<span>${t}</span>`).join('')}</div>
+        <div class="t-lv-tags">${meta.tags.map((t) => `<span>${t}</span>`).join('')}<span class="t-lv-view">${this.settings.view === 'topdown' ? 'Top-Down · huge hordes' : 'First Person'}</span></div>
       </div>`;
     const it = items[this.sel];
     el.querySelector('.t-hints').innerHTML =
