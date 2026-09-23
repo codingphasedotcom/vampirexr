@@ -28,6 +28,16 @@ export const KINDS = {
   fire: { tint: new THREE.Color(1.6, 0.55, 0.3), color: 0xff6a1a, range: 9, cooldown: 3.0, speed: 9, dmg: 14, effect: null },
   ice: { tint: new THREE.Color(0.6, 1.1, 1.7), color: 0x7fe8ff, range: 10, cooldown: 3.4, speed: 8, dmg: 8, effect: 'slow' },
 };
+// Horde roles change behaviour (the model stays the type's). Elites are rare champions with a modifier.
+export const ROLES = {
+  charger: { tint: new THREE.Color(1.35, 0.5, 1.0), hp: 1.2, speed: 1.0 },   // telegraphs, then lunges in a straight line
+  bomber: { tint: new THREE.Color(1.9, 0.85, 0.25), hp: 0.6, speed: 1.35 },  // rushes in and detonates; kills set off chain reactions
+  splitter: { tint: new THREE.Color(0.75, 1.5, 0.6), hp: 1.0, speed: 0.95 }, // bursts into two smaller copies on death
+};
+export const ELITE_MODS = ['swift', 'vampiric', 'regen'];
+const ELITE_TINT = new THREE.Color(1.55, 1.25, 0.5);
+const WARN = new THREE.Color(3, 0.35, 0.35);
+const CHARGE = { wind: 0.75, dash: 0.55, speed: 11, rest: 0.9, cooldown: 2.6, range: 10 };
 const cellKey = (cx, cz) => (cx + 2048) * 4096 + (cz + 2048);
 const _out = { x: 0, z: 0 };
 
@@ -102,7 +112,16 @@ export class EnemyManager {
     };
     for (const def of bossDefs) {
       if (!def.model) continue;
-      this.loadModel(def, 0.035).then((m) => { this.bossModels[def.name] = m; report(def.name); })
+      this.loadModel(def, 0.035).then(async (m) => {
+        if (def.attackModel) { // optional attack clip: its own baked VAT, swapped in while the boss attacks
+          try {
+            const vat = await loadVATModel(def.attackModel.url, { ...def.attackModel, frames: 36 });
+            vat.geometry.setAttribute('aPhase', new THREE.BufferAttribute(new Float32Array(vat.geometry.attributes.position.count), 1));
+            m.attack = vat;
+          } catch (err) { console.warn(`Attack clip for ${def.name} not loaded:`, err.message || err); }
+        }
+        this.bossModels[def.name] = m; report(def.name);
+      })
         .catch((err) => { console.warn(`Boss model for ${def.name} not loaded, keeping procedural:`, err.message || err); report(def.name, err); });
     }
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
@@ -143,34 +162,48 @@ export class EnemyManager {
     const outline = new THREE.Mesh(geo, outlineMat);
     outline.frustumCulled = false;
     mesh.add(outline); // bosses keep their outline in VR too: one extra draw call
+    let attack = null;
+    if (loaded?.attack) {
+      const clock = { value: 0 };
+      attack = { vat: loaded.attack, clock, material: vatMaterial(loaded.attack, clock, { rate: 1 }),
+        outline: vatMaterial(loaded.attack, clock, { rate: 1, outline: 0.035 }), walk: { geo, material, outlineMat } };
+    }
     this.scene.add(mesh);
     const t = { ...def, boss: true };
     const hp = def.hp * hpMul;
-    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1, age: 0 };
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1, age: 0, attack, attackT: 0, attackDur: 0 };
     this.list.push(e);
     this.counts.boss++;
     return e;
   }
 
   // `casterChance` (0–1) is the share of spawns that become fire/ice casters; bosses summon with 0.
-  spawn(type, x, z, hpMul = 1, casterChance = 0) {
-    if (this.list.filter(e => !e.dead).length >= 200 || this.counts[type] >= MAX[type]) return null;
+  // opts: { role: 'charger'|'bomber'|'splitter', elite: bool, scale, noSplit }
+  spawn(type, x, z, hpMul = 1, casterChance = 0, opts = {}) {
+    if (this.list.length >= 200 || this.counts[type] >= MAX[type]) return null;
     const t = ENEMY_TYPES[type];
-    const r = Math.random();
-    const scale = r < 0.06 ? 1.7 : 0.75 + Math.random() * 0.6; // rare giants, otherwise 0.75–1.35
-    const kind = Math.random() < casterChance ? (Math.random() < 0.5 ? 'fire' : 'ice') : 'normal';
+    const role = ROLES[opts.role] ? opts.role : null, R = role ? ROLES[role] : null;
+    let scale = opts.scale ?? (Math.random() < 0.06 ? 1.7 : 0.75 + Math.random() * 0.6); // rare giants, otherwise 0.75–1.35
+    const kind = !role && Math.random() < casterChance ? (Math.random() < 0.5 ? 'fire' : 'ice') : 'normal';
     const k = KINDS[kind];
-    const tint = k.tint ? k.tint.clone() : new THREE.Color().setHSL(Math.random(), 0.5, 0.5).lerp(new THREE.Color(1, 1, 1), 0.7);
+    const elite = !!opts.elite;
+    if (elite) scale = Math.max(scale, 1.2) * 1.25;
+    const tint = elite ? ELITE_TINT.clone() : R ? R.tint.clone() : k.tint ? k.tint.clone()
+      : new THREE.Color().setHSL(Math.random(), 0.5, 0.5).lerp(new THREE.Color(1, 1, 1), 0.7);
+    const mod = elite ? ELITE_MODS[Math.floor(Math.random() * ELITE_MODS.length)] : null;
     const e = {
-      type, t, x, z, kind, scale, tint, walkX: x, walkZ: z,
+      type, t, x, z, kind, role, elite, mod, scale, tint, walkX: x, walkZ: z, noSplit: !!opts.noSplit,
       size: t.size * scale,
-      speed: t.speed * (1.25 - 0.25 * scale), // small ones are quick, giants lumber
-      hp: t.hp * hpMul * Math.pow(scale, 1.5),
-      dmgMul: scale,
-      xp: Math.max(1, Math.round(t.xp * scale)),
+      speed: t.speed * (1.25 - 0.25 * Math.min(scale, 1.7)) * (R?.speed ?? 1) * (mod === 'swift' ? 1.5 : 1),
+      hp: t.hp * hpMul * Math.pow(scale, 1.5) * (R?.hp ?? 1) * (elite ? 4 : 1),
+      dmgMul: scale * (elite ? 1.3 : 1),
+      xp: Math.max(1, Math.round(t.xp * scale * (elite ? 5 : 1))),
       shootT: k.cooldown ? Math.random() * k.cooldown : 0,
+      flank: (Math.random() * 2 - 1) * 0.95, // approach angle offset: the horde fans out and surrounds instead of queueing
+      cs: 'run', ct: Math.random() * CHARGE.cooldown, warn: 0, fuse: 0,
       flash: 0, phase: Math.random() * Math.PI * 2, kx: 0, kz: 0, orbHit: -1, dead: false, age: 0,
     };
+    e.maxHp = e.hp;
     this.list.push(e);
     this.counts[type]++;
     return e;
@@ -190,6 +223,35 @@ export class EnemyManager {
     const dx = e.x - fromX, dz = e.z - fromZ, d = Math.hypot(dx, dz) || 1;
     force /= e.size; // big enemies barely budge
     e.kx += dx / d * force; e.kz += dz / d * force;
+  }
+
+  // Walk toward the player along a fanned-out arc: far away the approach angle is offset by `flank`,
+  // closing to a straight line near the player, so the horde spreads into a ring instead of a conga line.
+  approach(e, dt, d, dx, dz, stop, speed) {
+    const a = e.flank * Math.min(1, Math.max(0, (d - 3) / 10));
+    const ux = dx / d, uz = dz / d, ca = Math.cos(a), sa = Math.sin(a);
+    const s = Math.min(speed * dt, d - stop);
+    e.x += (ux * ca - uz * sa) * s; e.z += (ux * sa + uz * ca) * s;
+  }
+
+  // Charger state machine: run → wind-up (stands still, flashes red) → straight lunge → recover. Returns true while lunging.
+  chargerStep(e, dt, d, dx, dz) {
+    e.ct -= dt;
+    if (e.cs === 'run') {
+      if (d < CHARGE.range && e.ct <= 0) { e.cs = 'wind'; e.ct = CHARGE.wind; }
+      else if (d > e.size * 0.5 + 0.45) this.approach(e, dt, d, dx, dz, e.size * 0.5 + 0.45, e.speed);
+    } else if (e.cs === 'wind') {
+      e.warn = 0.6 + 0.4 * Math.sin(e.ct * 30);
+      if (e.ct <= 0) { e.cs = 'dash'; e.ct = CHARGE.dash; e.cdx = dx / d; e.cdz = dz / d; }
+    } else if (e.cs === 'dash') {
+      e.x += e.cdx * CHARGE.speed * dt; e.z += e.cdz * CHARGE.speed * dt; e.warn = 1;
+      if (e.ct <= 0) { e.cs = 'rest'; e.ct = CHARGE.rest; }
+      return true;
+    } else if (e.cs === 'rest') {
+      if (d > e.size * 0.5 + 0.45) this.approach(e, dt, d, dx, dz, e.size * 0.5 + 0.45, e.speed * 0.3);
+      if (e.ct <= 0) { e.cs = 'run'; e.ct = CHARGE.cooldown; }
+    }
+    return false;
   }
 
   forEachNear(x, z, r, cb) {
@@ -212,8 +274,10 @@ export class EnemyManager {
   }
 
   // Moves everyone toward the player, keeps them from stacking, and returns contact damage dealt this frame.
-  // `shoot(e, k)` is called when a caster fires.
-  update(dt, playerPos, time, colliders = null, shoot = null) {
+  // hooks: { shoot(e, kind) — caster fires, explode(e) — bomber fuse ran out }. A plain function is treated as `shoot`.
+  update(dt, playerPos, time, colliders = null, hooks = null) {
+    if (typeof hooks === 'function') hooks = { shoot: hooks };
+    const shoot = hooks?.shoot;
     enemyTime.value = time;
     let w = 0;
     for (const e of this.list) {
@@ -243,18 +307,29 @@ export class EnemyManager {
       const dx = px - e.x, dz = pz - e.z, d = Math.hypot(dx, dz) || 0.001;
       const stop = e.size * 0.5 + 0.45;
       const k = KINDS[e.kind];
+      let dmgK = 1;
+      e.warn = Math.max(0, e.warn - dt * 3);
       if (!e.t.boss) {
-        if (k.range && d < k.range) {
+        if (e.mod === 'regen') e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.03 * dt);
+        if (e.role === 'charger' && this.chargerStep(e, dt, d, dx, dz)) dmgK = 1.8;
+        else if (e.role === 'bomber') {
+          if (e.fuse > 0) {
+            e.fuse -= dt; e.warn = 0.5 + 0.5 * Math.sin(time * 40);
+            if (e.fuse <= 0) { hooks?.explode?.(e); continue; }
+          } else if (d < 1.8) e.fuse = 0.55;
+          else { const s = Math.min(e.speed * dt, d - stop); e.x += dx / d * s; e.z += dz / d * s; }
+        } else if (k.range && d < k.range) {
           // casters hold their range and fire; if you close in they back off slowly
           if (d < k.range * 0.6) { e.x -= dx / d * e.speed * 0.5 * dt; e.z -= dz / d * e.speed * 0.5 * dt; }
           e.shootT -= dt;
           if (e.shootT <= 0 && shoot) { e.shootT = k.cooldown; shoot(e, k); }
-        } else if (d > stop) {
-          const s = Math.min(e.speed * dt, d - stop);
-          e.x += dx / d * s; e.z += dz / d * s;
-        }
+        } else if (d > stop) this.approach(e, dt, d, dx, dz, stop, e.speed);
       }
-      if (d < stop + 0.3) contact += e.t.dmg * (e.dmgMul || 1) * dt;
+      if (d < stop + 0.3 && !e.dead) {
+        const c = e.t.dmg * (e.dmgMul || 1) * dmgK * dt;
+        contact += c;
+        if (e.mod === 'vampiric') e.hp = Math.min(e.maxHp, e.hp + c * 4);
+      }
 
       if (e.kx || e.kz) {
         e.x += e.kx * dt; e.z += e.kz * dt;
@@ -299,10 +374,16 @@ export class EnemyManager {
       const yaw = Math.atan2(px - e.x, pz - e.z);
       if (e.mesh) {
         e.walkClock.value = walkTime;
+        if (e.attackT > 0 && !dying) {
+          e.attackT -= dt;
+          e.attack.clock.value = Math.min(0.999, 1 - e.attackT / e.attackDur) * e.attack.vat.duration;
+          if (e.attackT <= 0) this.endBossAttack(e);
+        }
         e.mesh.position.set(e.x, (e.t.fly ? Math.sin(time * 3 + e.phase) * 0.3 : 0) + sink, e.z);
         e.mesh.rotation.set(tilt * 0.4, yaw, 0, 'YXZ');
         e.mesh.scale.setScalar(scale);
-        e.mesh.material.emissive.setScalar(Math.min(1, e.flash * 0.8 + (dying ? 1 - e.dieT / e.dieMax : 0)));
+        const white = Math.min(1, e.flash * 0.8 + (dying ? 1 - e.dieT / e.dieMax : 0)), red = e.warn * (0.35 + 0.25 * Math.sin(time * 18));
+        e.mesh.material.emissive.setRGB(white + red, white + red * 0.12, white + red * 0.1);
         if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
         return;
       }
@@ -315,7 +396,7 @@ export class EnemyManager {
       dummy.scale.setScalar(e.scale * scale * (1 + e.flash * 0.12));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
-      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(glow));
+      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(glow).lerp(WARN, e.warn * 0.7));
       this.phases[e.type].array[i] = e.phase;
       this.walkTimes[e.type].array[i] = walkTime;
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
@@ -335,8 +416,28 @@ export class EnemyManager {
     return contact;
   }
 
+  // Play the boss's attack clip once over `duration` seconds (no-op without a loaded attack clip).
+  bossAttack(e, duration) {
+    const a = e.attack;
+    if (!a) return;
+    e.attackT = e.attackDur = duration;
+    e.mesh.geometry = a.vat.geometry; e.mesh.material = a.material;
+    const o = e.mesh.children[0]; o.geometry = a.vat.geometry; o.material = a.outline;
+  }
+
+  endBossAttack(e) {
+    const w = e.attack.walk;
+    e.mesh.geometry = w.geo; e.mesh.material = w.material;
+    const o = e.mesh.children[0]; o.geometry = w.geo; o.material = w.outlineMat;
+  }
+
   disposeBoss(e) {
     this.scene.remove(e.mesh);
+    if (e.attack) {
+      e.attack.walk.geo.dispose(); e.attack.material.dispose(); e.attack.outline.dispose();
+      if (e.mesh.userData.ownsMaterial) { e.attack.walk.material.dispose(); e.attack.walk.outlineMat.dispose(); }
+      return;
+    }
     e.mesh.geometry.dispose();
     if (e.mesh.userData.ownsMaterial) { e.mesh.material.dispose(); e.mesh.children[0]?.material.dispose(); }
   }

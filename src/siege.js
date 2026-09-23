@@ -39,7 +39,8 @@ export class CastleSiege {
       // Clear perimeter lanes keep every encounter reachable, including ground enemies.
       const x = Math.random() < 0.5 ? -8 : 8;
       const z = this.room.z + (Math.random() * 14 - 7);
-      const e = g.enemies.spawn(g.pickType(this.room.tier), x, z, this.room.hp, this.room.casters);
+      const type = g.pickType(this.room.tier);
+      const e = g.enemies.spawn(type, x, z, this.room.hp, this.room.casters, g.spawnOpts(type, this.room.tier));
       if (e) this.spawned++;
     }
     if (this.spawned < this.room.count || g.enemies.list.some(e => !e.dead)) return;

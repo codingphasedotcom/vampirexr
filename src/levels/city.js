@@ -58,6 +58,7 @@ export const city = {
   playerLight: 10,
   groundFog: { color: 0x3a3048, opacity: 0.35, height: 0.3 },
   rimLight: { color: 0x8fd8ff, strength: 0.7 },
+  weather: { type: 'rain', count: 1800, thunder: true },
   ground: pavementTexture,
   build(group, col) {
     // roads: a grid of asphalt strips with dashed centre lines

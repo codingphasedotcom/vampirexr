@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-23 (anime graphics overhaul, dash, evolutions, music, console title screen).
+> Last updated: 2026-09-23 (horde roles/elites/events, boss attack clips, weather, village day→night).
 
 ## 1. What the game is
 
@@ -22,7 +22,7 @@ vanilla ES modules.
 index.html            #title (built by src/title.js), #overlay (in-game pause only), crosshair, all front-end CSS
 vite.config.js        basic-ssl only when SSL=1
 scripts/optimize-glb.sh   gltf-transform: 1K WebP textures + meshopt → public/models/*.glb (~300 KB each)
-public/models/*.glb   10 AI-generated anime models (see §9)
+public/models/*.glb   10 AI-generated anime models + 4 boss attack clips (`*_attack.glb`, see §9)
 public/img/           logo.png (black bg, alpha-keyed at runtime), keyart.jpg
 docs/ARCHITECTURE.md  this file
 CLAUDE.md             working rules for AI agents (deploy, testing, docs)
@@ -138,6 +138,24 @@ per-instance `aPhase`. Returns contact damage (`t.dmg · dmgMul · dt` for enemi
 
 Bosses are single `Mesh`es (`spawnBoss`) in the same list with `t.boss = true`; flash uses `material.emissive`.
 
+**Horde roles** (`ROLES`, rolled by `game.spawnOpts(type, tier)`; castle rooms pass their tier):
+- *Charger* (ghoul/brute, from wave 4, 8→25%): `chargerStep` — run → 0.75 s wind-up (stands still, red `warn` pulse) → 0.55 s
+  straight lunge at 11 m/s with 1.8× contact damage → 0.9 s recovery → 2.6 s cooldown. Magenta tint.
+- *Bomber* (bat, from wave 3, 12→30%): rushes in, 0.55 s fuse under 1.8 m, then `hooks.explode` → `game.explode(e, true)`
+  (2.6 m radius, hurts the player). Shooting one first detonates it with `hurtsPlayer = false`, so bombers chain through the
+  horde (damage source `bomber` in Run Stats). Orange tint + glow.
+- *Splitter* (ghoul, from wave 6): on death spawns two 0.62× copies (`noSplit`). Green tint.
+- *Elite* (non-bat, from wave 5, 1.3→5%, max 3 alive): ≥1.5× scale, 4× HP, 5× XP, 1.3× damage, gold tint, rotating golden
+  halo + crown glow, and a modifier `mod`: `swift` (1.5× speed), `vampiric` (heals 4× the contact damage it deals), `regen`
+  (3% max HP/s). Drops a chest and a heal orb.
+- Movement: every non-boss enemy has a `flank` offset (±0.95 rad) applied while far away (`approach`), fading to a straight line
+  within ~3 m — the horde fans out and encircles instead of queueing behind one another.
+- `update(dt, playerPos, time, colliders, hooks)` — `hooks = { shoot(e, kind), explode(e) }` (a bare function = `shoot`).
+
+**Horde events** (survival, waves ≥ 3 except boss waves, once per wave 9–16 s in, rotating `HORDE_EVENTS`): `encircle`
+(16 + 2w ghouls in a 14 m ring), `swarm` (18 + 2w bats from one direction, 30% bombers), `stampede` (6 + w/2 chargers from one
+side), `escort` (an elite brute with 10 ghouls). Extra to the wave total; respects the 200 cap.
+
 **Look:** every type has an ink-outline companion `InstancedMesh` sharing the instance buffers (`setTypeMesh`); outlines are
 hidden in XR (`outlinesVisible`) to stay inside the Quest vertex budget, bosses keep theirs (child mesh). New spawns rise out of
 the ground with an overshoot (`age`); killed enemies move to `this.dying` for a 0.42 s flash-swell-crumple (1.4 s for bosses)
@@ -189,7 +207,12 @@ optional `groundVariation`, `playerLight` intensity, `ground()` texture factory,
 
 Look: after `build()`, `toonify()` converts every Lambert prop to a toon material (set `userData.keepMaterial` to opt out). The
 ground keeps Lambert with `macroVariation` (two octaves of `noiseTexture()` to hide tiling). `GroundFog` is one transparent
-noise-scrolled disc (42 m) following the player. `Flames` are flickering additive glow points (graveyard braziers) — no real
+noise-scrolled disc (42 m) following the player. `Weather` (level `weather: { type: 'rain'|'snow', count, thunder }`) is one
+draw call — drops live in a box that wraps around the player and are animated purely in the vertex shader; City has rain with
+lightning (`World.update` returns true on a thunder frame → `sfx.thunder()`, hemi light + sky flash), Castle Siege has snow.
+`dayCycle: { duration, keys[] }` (Village: noon → sunset at 6 min → night at 12 min) is applied by `World.setTimeOfDay(u)`
+each frame from game time: lerps sky, fog, hemisphere/key lights, sun height and glow, cloud colour, star opacity and the
+player's lantern (`playerLightNow`). `Flames` are flickering additive glow points (graveyard braziers) — no real
 lights, the Quest pays per light per pixel.
 
 ## 9. Models & the asset pipeline (`models.js`, `creatures.js`)
@@ -208,6 +231,11 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   the inverted-hull ink pass (back faces pushed out along the normal by `w`). Rim colour/strength come from the level.
 - Meshopt-compressed GLBs have **Int16 quantized attributes**: convert with `toFloat()` before any transform.
 - `normalizeRoot` rescales to `height`, centres x/z, feet at y = 0; `lift` raises flyers (applied to geometry / baked positions).
+- **Boss attack clips** (`attackModel` on golem/necro/butcher/vampire → `public/models/*_attack.glb`: Charged_Ground_Slam,
+  Charged_Spell_Cast, Charged_Axe_Chop, mage_soell_cast from the Meshy library, re-rigged from the same meshes). Baked to a
+  separate 36-frame VAT; `enemies.bossAttack(e, seconds)` (called from the boss AI when it slams / casts / charges) swaps the
+  boss mesh + outline to the attack geometry/material and plays the clip once over that duration, then `endBossAttack` swaps
+  back. Boss wind-ups set `e.warn` → pulsing red emissive (hit flashes stay white).
 - Bosses clone the loaded geometry. Animated bosses have a private VAT material and clock; static bosses share the loaded material. Flash uses `emissive`. Private materials and boss geometry are disposed on death/restart.
 
 ## 10. HUD, menus, art

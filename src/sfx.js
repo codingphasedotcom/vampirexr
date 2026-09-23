@@ -68,5 +68,6 @@ export class Sfx {
   roar()    { [70, 55, 45].forEach((f, i) => this.tone({ f, t: 0.55, type: 'sawtooth', vol: 0.1, slide: -20, at: i * 0.16 })); this.noise({ t: 0.9, vol: 0.12, type: 'lowpass', f: 300, fEnd: 80 }); }
   levelup() { [523, 659, 784, 1046].forEach((f, i) => this.tone({ f, t: 0.22, type: 'triangle', vol: 0.06, at: i * 0.08 })); }
   evolve()  { [392, 523, 659, 784, 1046, 1318].forEach((f, i) => this.tone({ f, t: 0.35, type: 'triangle', vol: 0.06, at: i * 0.07 })); this.noise({ t: 0.8, vol: 0.06, type: 'highpass', f: 4000, fEnd: 9000 }); }
+  thunder() { this.noise({ t: 2.2, vol: 0.16, type: 'lowpass', f: 420, fEnd: 45, at: 0.25 + Math.random() * 0.8 }); this.noise({ t: 0.3, vol: 0.08, type: 'highpass', f: 2000, fEnd: 400 }); }
   die()     { [300, 250, 200, 120].forEach((f, i) => this.tone({ f, t: 0.4, type: 'sawtooth', vol: 0.07, slide: -40, at: i * 0.2 })); }
 }

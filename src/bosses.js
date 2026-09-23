@@ -146,19 +146,19 @@ const AI = {
   golem(e, dt, g) {
     const s = e.s;
     if (s.wind > 0) {
-      s.wind -= dt; e.flash = Math.max(e.flash, 0.5);
+      s.wind -= dt; e.warn = 1; // red telegraph pulse
       if (s.wind <= 0) { g.bossFx.shockwave(e.x, e.z, 9, 22); g.sfx.roar(); }
       return;
     }
     const d = toward(e, dt, g, e.t.speed, e.t.size * 0.5 + 0.45);
-    if (tick(s, 'slam', dt, 6) && d < 10) s.wind = 1.0;
+    if (tick(s, 'slam', dt, 6) && d < 10) { s.wind = 1.0; g.enemies.bossAttack(e, 1.5); }
   },
 
   necro(e, dt, g) {
     const s = e.s, p = g.player.pos, d = Math.hypot(p.x - e.x, p.z - e.z);
     if (d < 8) away(e, dt, g, 2.6);
     else if (d > 12) toward(e, dt, g, 2.0, 12);
-    if (tick(s, 'shoot', dt, 3)) shootAt(g, e, 3, 0.5, 7, 12);
+    if (tick(s, 'shoot', dt, 3)) { shootAt(g, e, 3, 0.5, 7, 12); g.enemies.bossAttack(e, 1.3); }
     if (tick(s, 'raise', dt, 10)) summon(g, e, 'ghoul', 6, 2.5);
   },
 
@@ -173,7 +173,7 @@ const AI = {
   butcher(e, dt, g) {
     const s = e.s;
     if (s.wind > 0) {
-      s.wind -= dt; e.flash = Math.max(e.flash, 0.5);
+      s.wind -= dt; e.warn = 1; // red telegraph pulse
       if (s.wind <= 0) {
         const p = g.player.pos, dx = p.x - e.x, dz = p.z - e.z, d = Math.hypot(dx, dz) || 1;
         s.vx = dx / d * 15; s.vz = dz / d * 15; s.dash = 0.7; e.dmgMul = 2.5;
@@ -187,13 +187,13 @@ const AI = {
       return;
     }
     const d = toward(e, dt, g, e.t.speed, e.t.size * 0.5 + 0.45);
-    if (tick(s, 'charge', dt, 5) && d < 14) s.wind = 0.8;
+    if (tick(s, 'charge', dt, 5) && d < 14) { s.wind = 1.0; g.enemies.bossAttack(e, 2.0); }
   },
 
   vampire(e, dt, g) {
     const s = e.s;
     toward(e, dt, g, e.t.speed, e.t.size * 0.5 + 0.45);
-    if (tick(s, 'shoot', dt, 2.5)) shootAt(g, e, 5, 0.9, 8, 14);
+    if (tick(s, 'shoot', dt, 2.5)) { shootAt(g, e, 5, 0.9, 8, 14); g.enemies.bossAttack(e, 1.1); }
     if (tick(s, 'tp', dt, 8)) teleport(g, e, 6);
     if (tick(s, 'summon', dt, 12)) { summon(g, e, 'wraith', 3, 3); summon(g, e, 'bat', 8, 2); }
   },
@@ -204,15 +204,19 @@ export const BOSSES = [
   { level: 5,  name: 'Bat Lord',     hp: 900,   speed: 6,   dmg: 12, size: 2.2, y: 3.6, color: 0xb36bff, xp: 40,  fly: true, build: batLordGeometry, anim: ['FLAP'], ai: AI.batLord,
     model: { url: '/models/batlord.glb', height: 2.8, lift: 1.6, yaw: 0, animated: false } },
   { level: 10, name: 'Grave Golem',  hp: 2200,  speed: 1.2, dmg: 20, size: 3.2, y: 2.2, color: 0x9dff70, xp: 60,  build: golemGeometry, anim: ['SHAMBLE', { speed: 3, hip: 1.3 }], ai: AI.golem,
-    model: { url: '/models/golem.glb', height: 4.5, yaw: 0, rate: 1.5 } },
+    model: { url: '/models/golem.glb', height: 4.5, yaw: 0, rate: 1.5 },
+    attackModel: { url: '/models/golem_attack.glb', height: 4.5, yaw: 0 } },
   { level: 15, name: 'Necromancer',  hp: 3200,  speed: 2.0, dmg: 10, size: 1.8, y: 1.8, color: 0x7dff9a, xp: 80,  build: necroGeometry, anim: ['WAVE'], ai: AI.necro,
-    model: { url: '/models/necro.glb', height: 3.2, yaw: 0, rate: 1.8 } },
+    model: { url: '/models/necro.glb', height: 3.2, yaw: 0, rate: 1.8 },
+    attackModel: { url: '/models/necro_attack.glb', height: 3.2, yaw: 0 } },
   { level: 20, name: 'Wraith Queen', hp: 5000,  speed: 3.5, dmg: 16, size: 2.0, y: 2.6, color: 0x9ff8ff, xp: 100, fly: true, build: queenGeometry, anim: ['WAVE'], ai: AI.queen,
     model: { url: '/models/queen.glb', height: 3.6, lift: 0.4, yaw: 0, animated: false } },
   { level: 25, name: 'The Butcher',  hp: 8000,  speed: 1.8, dmg: 30, size: 3.0, y: 2.6, color: 0xff3b3b, xp: 130, build: butcherGeometry, anim: ['SHAMBLE', { speed: 4, hip: 1.2 }], ai: AI.butcher,
-    model: { url: '/models/butcher.glb', height: 4.5, yaw: 0, rate: 1.8 } },
+    model: { url: '/models/butcher.glb', height: 4.5, yaw: 0, rate: 1.8 },
+    attackModel: { url: '/models/butcher_attack.glb', height: 4.5, yaw: 0 } },
   { level: 30, name: 'Vampire Lord', hp: 14000, speed: 2.6, dmg: 24, size: 2.2, y: 2.6, color: 0xff2a6d, xp: 200, build: vampireGeometry, anim: ['WAVE'], ai: AI.vampire, final: true,
-    model: { url: '/models/vampire.glb', height: 3.5, yaw: 0, rate: 1.7 } },
+    model: { url: '/models/vampire.glb', height: 3.5, yaw: 0, rate: 1.7 },
+    attackModel: { url: '/models/vampire_attack.glb', height: 3.5, yaw: 0 } },
 ];
 
 // ---------- boss-owned effects: projectiles that hurt the player, and shockwave rings ----------

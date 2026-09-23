@@ -95,6 +95,15 @@ export const village = {
   clouds: { color: 0xffffff, opacity: 0.85, count: 14 },
   playerLight: 0,
   rimLight: { color: 0xfff1d6, strength: 0.4 },
+  // The village slowly slides from noon through sunset into night over a run: survive until dark.
+  dayCycle: { duration: 720, keys: [
+    { t: 0, top: 0x3f7fd8, horizon: 0xc9e2ff, fog: 0xc9e2ff, fogDensity: 0.011, hemiSky: 0xbfdfff, hemiGround: 0x5a6a3a, hemi: 1.3,
+      keyColor: 0xfff2d6, key: 2.4, sunY: 170, sunGlow: 0xfff0c0, stars: 0, playerLight: 0, clouds: 0xffffff },
+    { t: 0.5, top: 0x3a3f7a, horizon: 0xff9a5a, fog: 0xd98a6a, fogDensity: 0.013, hemiSky: 0xffb38a, hemiGround: 0x4a3a3a, hemi: 1.0,
+      keyColor: 0xffa060, key: 1.7, sunY: 22, sunGlow: 0xff7a3a, stars: 0.15, playerLight: 4, clouds: 0xffa684 },
+    { t: 1, top: 0x04050e, horizon: 0x1b2040, fog: 0x161a30, fogDensity: 0.02, hemiSky: 0x5060a0, hemiGround: 0x1a1620, hemi: 0.85,
+      keyColor: 0x9fb0ff, key: 0.9, sunY: -40, sunGlow: 0x7f8cff, stars: 0.9, playerLight: 12, clouds: 0x262b44 },
+  ] },
   ground: grassTexture,
   build(group, col) {
     buildHouses(group, col, 22);

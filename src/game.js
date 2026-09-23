@@ -36,6 +36,11 @@ const waveCount = (w) => Math.min(1500, Math.floor(30 * Math.pow(1.28, w - 1)));
 const waveHpMul = (w) => 1 + (w - 1) * 0.2 + (w - 1) * (w - 1) * 0.01; // ~2× by wave 5, ~3.6× by wave 10
 const casterChance = (w) => Math.min(0.35, Math.max(0, (w - 2) * 0.03)); // fire/ice casters from wave 3
 const waveTimeLimit = (w) => 50 + w * 5; // seconds before the next wave starts regardless
+// Horde roles by wave: bombers (bats) from 3, chargers (ghouls/brutes) from 4, splitters (ghouls) from 6; elites from 5.
+const roleChance = { bomber: (w) => (w >= 3 ? Math.min(0.3, 0.12 + w * 0.01) : 0), charger: (w) => (w >= 4 ? Math.min(0.25, 0.08 + w * 0.01) : 0),
+  splitter: (w) => (w >= 6 ? Math.min(0.2, 0.06 + w * 0.008) : 0) };
+const eliteChance = (w) => (w >= 5 ? Math.min(0.05, 0.012 + w * 0.0015) : 0);
+const HORDE_EVENTS = ['encircle', 'swarm', 'stampede', 'escort'];
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 const _col = { x: 0, z: 0 };
@@ -362,7 +367,7 @@ export class Game {
 
   // Run summary card: time, wave, level, kills and damage dealt per weapon.
   statsCard() {
-    const p = this.player, names = Object.fromEntries(WEAPONS.map((W) => [W.id, W.title]));
+    const p = this.player, names = { ...Object.fromEntries(WEAPONS.map((W) => [W.id, W.title])), bomber: 'Bomber blasts' };
     const fmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v));
     const rows = Object.entries(this.stats.damage).sort((a, b) => b[1] - a[1]).slice(0, 5)
       .map(([id, v]) => `${names[id] || id}: ${fmt(v)}${this.weapons.find((w) => w.constructor.id === id)?.evolved ? ' ★' : ''}`);
@@ -453,6 +458,22 @@ export class Game {
       else if (Math.random() < 0.05) this.gems.spawnHeal(e.x, e.z);
       this.particles.burst(e.x, e.t.y * (e.scale ?? 1), e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
       this.sfx.kill();
+      if (e.role === 'bomber') this.explode(e, false); // shot bombers blow up their friends, not you
+      if (e.role === 'splitter' && !e.noSplit) {
+        const dx = e.x - this.player.pos.x, dz = e.z - this.player.pos.z, d = Math.hypot(dx, dz) || 1;
+        for (const side of [-1, 1]) {
+          const c = this.enemies.spawn(e.type, e.x - dz / d * 0.7 * side, e.z + dx / d * 0.7 * side, this.hpMul * 0.6, 0,
+            { scale: Math.max(0.5, e.scale * 0.62), noSplit: true });
+          if (c) { c.age = 0.3; c.tint.copy(e.tint); }
+        }
+        this.particles.burst(e.x, 0.8, e.z, 0x9dff70, 14, 3);
+      }
+      if (e.elite) {
+        this.chests.spawn(e.x, e.z);
+        this.gems.spawnHeal(e.x + 0.8, e.z);
+        this.particles.burst(e.x, 1.2, e.z, 0xffd166, 50, 5);
+        this.hud.toast('Elite slain — treasure!', 2);
+      }
       if (e.t.boss) {
         this.boss = null;
         this.hud.toast(`${e.t.name} slain!`, 3);
@@ -501,7 +522,17 @@ export class Game {
     for (const w of this.weapons) w.draw(dt);
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
-    for (const e of this.enemies.list) if (e.kind !== 'normal') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.9 * e.scale, _kindColor.set(KINDS[e.kind].color), 0.7);
+    for (const e of this.enemies.list) {
+      if (e.kind !== 'normal') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.9 * e.scale, _kindColor.set(KINDS[e.kind].color), 0.7);
+      if (e.elite) { // champion: rotating golden halo at the feet and a crown light overhead
+        _kindColor.set(0xffc94d);
+        const r = e.size * 0.75, spin = fxTime.value * 1.8;
+        for (let k = 0; k < 12; k++) { const a = spin + (k / 12) * Math.PI * 2; this.glow.add(e.x + Math.cos(a) * r, 0.18, e.z + Math.sin(a) * r, 0.55, _kindColor, 0.9); }
+        this.glow.add(e.x, (e.t.y + 0.75) * e.scale, e.z, 1.3, _kindColor, 0.75 + 0.25 * Math.sin(fxTime.value * 5));
+      }
+      if (e.role === 'bomber') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.7 + (e.fuse > 0 ? 0.6 : 0), _kindColor.set(0xff8a2a), e.fuse > 0 ? 1.2 : 0.55);
+      if (e.warn > 0.3 && e.role === 'charger') this.glow.add(e.x, e.t.y * e.scale, e.z, 1.4 * e.scale, _kindColor.set(0xff3050), e.warn * 0.8);
+    }
     this.enemies.outlinesVisible = !xr;
     this.shadows.begin();
     this.enemies.drawShadows(this.shadows);
@@ -510,7 +541,9 @@ export class Game {
     this.shadows.end();
     this.particles.update(dt);
     this.numbers.update(dt);
-    this.world.update(dt, fxTime.value, this.player.pos);
+    const cycle = this.world.level.dayCycle;
+    if (cycle) { this.world.setTimeOfDay(this.state === 'menu' ? 0 : Math.min(1, this.time / cycle.duration)); this.playerLight.intensity = this.world.playerLightNow; }
+    if (this.world.update(dt, fxTime.value, this.player.pos)) this.sfx.thunder();
     this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
     const inMenu = this.state === 'menu';
     this.hud.mesh.visible = !inMenu;
@@ -621,10 +654,13 @@ export class Game {
     else this.spawnDirector(dt);
     if (this.boss) this.boss.t.ai(this.boss, dt, this);
     if (this.siege) for (const e of this.enemies.list) confine(e, Math.max(0, this.siege.index));
-    const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders, (e, k) => {
-      const dx = p.pos.x - e.x, dz = p.pos.z - e.z, d = Math.hypot(dx, dz) || 1;
-      this.bossFx.shoot(e.x, e.z, dx / d * k.speed, dz / d * k.speed, k.dmg * this.hpMul * 0.5, k.color, k.effect);
-      this.particles.burst(e.x, e.t.y, e.z, k.color, 6, 2);
+    const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders, {
+      shoot: (e, k) => {
+        const dx = p.pos.x - e.x, dz = p.pos.z - e.z, d = Math.hypot(dx, dz) || 1;
+        this.bossFx.shoot(e.x, e.z, dx / d * k.speed, dz / d * k.speed, k.dmg * this.hpMul * 0.5, k.color, k.effect);
+        this.particles.burst(e.x, e.t.y, e.z, k.color, 6, 2);
+      },
+      explode: (e) => { e.hp = 0; e.dead = true; this.explode(e, true); },
     });
     for (const w of this.weapons) w.update(dt);
     this.bossFx.update(dt, this);
@@ -665,6 +701,62 @@ export class Game {
     return { wave: this.wave, total: WAVES, remaining, brk: this.waveBreak > 0 };
   }
 
+  // Bomber detonation: damages everything nearby; `hurtsPlayer` is false when the player shot it first,
+  // so bombers become chain-reaction ammunition against the horde.
+  explode(e, hurtsPlayer) {
+    const R = 2.6, y = e.t.y * e.scale, p = this.player.pos;
+    this.particles.burst(e.x, y, e.z, 0xffa040, 40, 7);
+    this.particles.burst(e.x, y, e.z, 0xfff1c0, 16, 4);
+    this.glow.add(e.x, y, e.z, 4, _kindColor.set(0xff8a2a), 1.4);
+    this.sfx.noise({ t: 0.5, vol: 0.2, type: 'lowpass', f: 900, fEnd: 60, key: 'boom', gap: 0.06 });
+    if (hurtsPlayer && Math.hypot(p.x - e.x, p.z - e.z) < R) this.damagePlayer(14 * Math.sqrt(this.hpMul));
+    const dmg = 45 * this.hpMul;
+    this.enemies.forEachNear(e.x, e.z, R + 1, (o) => {
+      if (o !== e && Math.hypot(o.x - e.x, o.z - e.z) < R + o.size * 0.5) {
+        this.hitEnemy(o, dmg, { quiet: true, src: 'bomber' });
+        this.enemies.knockback(o, e.x, e.z, 6);
+      }
+    });
+    this.addShake(Math.max(0, 0.4 - Math.hypot(p.x - e.x, p.z - e.z) * 0.02));
+  }
+
+  // Rolls a horde role / elite for a spawn at the given difficulty tier (wave, or castle room tier).
+  spawnOpts(type, w) {
+    const opts = {};
+    const r = Math.random();
+    if (type === 'bat' && r < roleChance.bomber(w)) opts.role = 'bomber';
+    else if ((type === 'ghoul' || type === 'brute') && r < roleChance.charger(w)) opts.role = 'charger';
+    else if (type === 'ghoul' && r < roleChance.charger(w) + roleChance.splitter(w)) opts.role = 'splitter';
+    if (type !== 'bat' && Math.random() < eliteChance(w) && this.enemies.list.filter((e) => e.elite).length < 3) opts.elite = true;
+    return opts;
+  }
+
+  // Mid-wave set pieces: a ring closing in, a bat swarm, a charger stampede, or an elite with an escort.
+  hordeEvent(kind) {
+    const p = this.player.pos, w = this.wave, room = () => MAX_ENEMIES - this.enemies.alive;
+    const add = (type, x, z, opts = {}) => { if (room() > 0) this.enemies.spawn(type, x, z, this.hpMul, 0, opts); };
+    const dir = rand(0, Math.PI * 2);
+    if (kind === 'encircle') {
+      const n = Math.min(room(), 16 + w * 2);
+      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; add('ghoul', p.x + Math.cos(a) * 14, p.z + Math.sin(a) * 14, this.spawnOpts('ghoul', w)); }
+      this.hud.toast('They surround you!', 2.5);
+    } else if (kind === 'swarm') {
+      const n = Math.min(room(), 18 + w * 2);
+      for (let i = 0; i < n; i++) { const a = dir + rand(-0.35, 0.35), r = rand(18, 24); add('bat', p.x + Math.cos(a) * r, p.z + Math.sin(a) * r, { role: Math.random() < 0.3 ? 'bomber' : null }); }
+      this.hud.toast('A swarm descends!', 2.5);
+    } else if (kind === 'stampede') {
+      const n = Math.min(room(), 6 + Math.floor(w / 2));
+      for (let i = 0; i < n; i++) { const a = dir + rand(-0.4, 0.4), r = rand(16, 20); add(i % 3 ? 'ghoul' : 'brute', p.x + Math.cos(a) * r, p.z + Math.sin(a) * r, { role: 'charger' }); }
+      this.hud.toast('Stampede!', 2.5);
+    } else if (kind === 'escort') {
+      const cx = p.x + Math.cos(dir) * 17, cz = p.z + Math.sin(dir) * 17;
+      add('brute', cx, cz, { elite: true });
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; add('ghoul', cx + Math.cos(a) * 2.5, cz + Math.sin(a) * 2.5); }
+      this.hud.toast('An elite champion approaches!', 2.5);
+    }
+    this.sfx.roar();
+  }
+
   // ---------- waves ----------
 
   startWave(w) {
@@ -674,6 +766,7 @@ export class Game {
     this.waveTimer = 0;
     this.spawnAcc = 0;
     this.waveRate = Math.max(2, this.waveTotal / 18); // spread the wave over ~18 s
+    this.eventAt = w >= 3 && !BOSS_WAVES[w] ? rand(9, 16) : Infinity;
     this.hpMul = waveHpMul(w);
     const bossName = BOSS_WAVES[w];
     if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
@@ -696,6 +789,7 @@ export class Game {
     }
     if (this.wave === 0) return;
     this.waveTimer += dt;
+    if (this.waveTimer >= this.eventAt) { this.eventAt = Infinity; this.hordeEvent(HORDE_EVENTS[(this.wave - 3) % HORDE_EVENTS.length]); }
     if (this.waveSpawned < this.waveTotal) {
       this.spawnAcc += this.waveRate * dt;
       while (this.spawnAcc >= 1 && this.waveSpawned < this.waveTotal && this.enemies.alive < MAX_ENEMIES) {
@@ -714,7 +808,7 @@ export class Game {
   }
 
   spawnAt(type, angle, dist, hpMul, casters = 0) {
-    const e = this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul, casters);
+    const e = this.enemies.spawn(type, this.player.pos.x + Math.cos(angle) * dist, this.player.pos.z + Math.sin(angle) * dist, hpMul, casters, this.spawnOpts(type, this.wave));
     if (e && !e.t.fly) this.particles.burst(e.x, 0.15, e.z, 0x2a1f3a, 8, 1.5); // grave dirt as it claws out of the ground
   }
 

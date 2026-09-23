@@ -198,6 +198,58 @@ export class Flames {
   }
 }
 
+// GPU weather: every drop/flake lives in a box that wraps around the player, animated entirely in the vertex shader
+// (one draw call, no per-frame CPU work). 'rain' = slanted streaks, 'snow' = soft drifting flakes.
+export class Weather {
+  constructor(group, { type = 'rain', count = 1600, box = 36, height = 18 } = {}) {
+    this.type = type;
+    const rain = type === 'rain', verts = rain ? count * 2 : count;
+    const seed = new Float32Array(verts * 3), end = new Float32Array(verts);
+    for (let i = 0; i < count; i++) {
+      const sx = Math.random(), sy = Math.random(), sz = Math.random();
+      for (let k = 0; k < (rain ? 2 : 1); k++) {
+        const v = rain ? i * 2 + k : i;
+        seed[v * 3] = sx; seed[v * 3 + 1] = sy; seed[v * 3 + 2] = sz; end[v] = k;
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts * 3), 3));
+    g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 3));
+    g.setAttribute('aEnd', new THREE.BufferAttribute(end, 1));
+    this.uniforms = { uTime: fxTime, uCenter: { value: new THREE.Vector3() }, uBox: { value: box }, uHeight: { value: height } };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: `uniform float uTime, uBox, uHeight; uniform vec3 uCenter; attribute vec3 aSeed; attribute float aEnd; varying float vFade;
+        void main() {
+          vec3 p;
+          p.x = uCenter.x + (fract(aSeed.x - uCenter.x / uBox) - 0.5) * uBox;
+          p.z = uCenter.z + (fract(aSeed.z - uCenter.z / uBox) - 0.5) * uBox;
+          ${rain ? `p.y = mod(aSeed.y * uHeight - uTime * 17.0, uHeight);
+          p.x += aEnd * 0.12; p.y += aEnd * 0.75;` : `p.y = mod(aSeed.y * uHeight - uTime * 1.3, uHeight);
+          p.x += sin(uTime * 0.9 + aSeed.x * 40.0) * 0.6; p.z += cos(uTime * 0.7 + aSeed.z * 40.0) * 0.6;`}
+          vec4 mv = viewMatrix * vec4(p, 1.0);
+          vFade = smoothstep(uBox * 0.5, uBox * 0.2, length(p.xz - uCenter.xz));
+          ${rain ? '' : 'gl_PointSize = clamp(90.0 / -mv.z, 1.0, 14.0);'}
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `varying float vFade;
+        void main() {
+          ${rain ? 'gl_FragColor = vec4(0.72, 0.8, 0.95, 0.32 * vFade);' : 'float d = length(gl_PointCoord - 0.5); gl_FragColor = vec4(0.95, 0.97, 1.0, (1.0 - smoothstep(0.2, 0.5, d)) * 0.85 * vFade);'}
+          #include <colorspace_fragment>
+        }`,
+      transparent: true, depthWrite: false,
+    });
+    this.mesh = rain ? new THREE.LineSegments(g, mat) : new THREE.Points(g, mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 6;
+    group.add(this.mesh);
+  }
+  update(playerPos) { this.uniforms.uCenter.value.copy(playerPos); }
+}
+
+const _ca = new THREE.Color(), _cb = new THREE.Color();
+const lerpHex = (out, a, b, t) => out.copy(_ca.set(a)).lerp(_cb.set(b), t);
+
 // Converts a level's Lambert props to cel-shaded toon materials so the world matches the characters.
 function toonify(group) {
   const cache = new Map();
@@ -257,7 +309,7 @@ export class World {
     scene.fog = new THREE.FogExp2(level.fog.color, level.fog.density);
     scene.background = null;
 
-    const sky = new THREE.Mesh(new THREE.SphereGeometry(280, 32, 16), new THREE.ShaderMaterial({
+    const sky = this.sky = new THREE.Mesh(new THREE.SphereGeometry(280, 32, 16), new THREE.ShaderMaterial({
       uniforms: { uTop: { value: new THREE.Color(level.sky.top) }, uHorizon: { value: new THREE.Color(level.sky.horizon) } },
       vertexShader: 'varying vec3 vW; void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
       fragmentShader: `uniform vec3 uTop, uHorizon; varying vec3 vW;
@@ -268,8 +320,9 @@ export class World {
     sky.renderOrder = -2; sky.frustumCulled = false;
     g.add(sky);
 
-    g.add(new THREE.HemisphereLight(level.hemi.sky, level.hemi.ground, level.hemi.intensity));
-    const key = new THREE.DirectionalLight(level.key.color, level.key.intensity);
+    this.hemi = new THREE.HemisphereLight(level.hemi.sky, level.hemi.ground, level.hemi.intensity);
+    g.add(this.hemi);
+    const key = this.key = new THREE.DirectionalLight(level.key.color, level.key.intensity);
     key.position.set(...level.key.position);
     g.add(key);
     if (level.rim) { const rim = new THREE.DirectionalLight(level.rim.color, level.rim.intensity); rim.position.set(...level.rim.position); g.add(rim); }
@@ -286,9 +339,10 @@ export class World {
       const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: c.glow, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, opacity: c.glowOpacity ?? 0.9 }));
       halo.position.copy(body.position); halo.scale.setScalar(c.glowSize);
       g.add(body, halo);
+      this.celestial = { body, halo, base: body.position.clone() };
     }
 
-    if (level.stars) {
+    if (level.stars || level.dayCycle) {
       const N = 1500, pos = new Float32Array(N * 3), v = new THREE.Vector3();
       for (let i = 0; i < N; i++) {
         v.randomDirection(); if (v.y < 0.05) v.y = -v.y + 0.05; v.multiplyScalar(250);
@@ -296,13 +350,13 @@ export class World {
       }
       const sg = new THREE.BufferGeometry();
       sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      const stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 1.1, fog: false, transparent: true, opacity: 0.9 }));
+      const stars = this.stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 1.1, fog: false, transparent: true, opacity: level.stars ? 0.9 : 0 }));
       stars.renderOrder = -1;
       g.add(stars);
     }
 
     this.clouds = [];
-    const cloudMat = new THREE.SpriteMaterial({ map: cloudTexture(), color: level.clouds.color, transparent: true, opacity: level.clouds.opacity, depthWrite: false, fog: false });
+    const cloudMat = this.cloudMat = new THREE.SpriteMaterial({ map: cloudTexture(), color: level.clouds.color, transparent: true, opacity: level.clouds.opacity, depthWrite: false, fog: false });
     for (let i = 0; i < level.clouds.count; i++) {
       const s = new THREE.Sprite(cloudMat);
       const a = rand(0, Math.PI * 2), r = rand(120, 230);
@@ -315,6 +369,38 @@ export class World {
     this.ambient = level.build(g, this.colliders) || null;
     toonify(g);
     this.groundFog = level.groundFog ? new GroundFog(g, level.groundFog) : null;
+    this.weather = level.weather ? new Weather(g, level.weather) : null;
+    this.playerLightNow = level.playerLight;
+    this.thunderT = level.weather?.thunder ? 6 + Math.random() * 8 : Infinity;
+    this.flash = 0;
+    this.baseHemi = level.hemi.intensity;
+  }
+
+  // Day → sunset → night for levels with a `dayCycle` (u = 0..1). Lerps sky, fog, lights, sun height and stars.
+  setTimeOfDay(u) {
+    const keys = this.level.dayCycle?.keys;
+    if (!keys) return;
+    let i = 0;
+    while (i < keys.length - 2 && u > keys[i + 1].t) i++;
+    const A = keys[i], B = keys[i + 1], t = Math.min(1, Math.max(0, (u - A.t) / (B.t - A.t)));
+    const f = (k) => A[k] + (B[k] - A[k]) * t;
+    const su = this.sky.material.uniforms;
+    lerpHex(su.uTop.value, A.top, B.top, t); lerpHex(su.uHorizon.value, A.horizon, B.horizon, t);
+    lerpHex(this.scene.fog.color, A.fog, B.fog, t); this.scene.fog.density = f('fogDensity');
+    lerpHex(this.hemi.color, A.hemiSky, B.hemiSky, t); lerpHex(this.hemi.groundColor, A.hemiGround, B.hemiGround, t);
+    this.baseHemi = f('hemi');
+    lerpHex(this.key.color, A.keyColor, B.keyColor, t); this.key.intensity = f('key');
+    if (this.celestial) {
+      const c = this.celestial, y = f('sunY');
+      c.body.position.set(c.base.x, y, c.base.z); c.halo.position.copy(c.body.position);
+      lerpHex(c.halo.material.color, A.sunGlow, B.sunGlow, t);
+      c.body.visible = c.halo.visible = y > -10;
+      this.key.position.set(c.base.x, Math.max(8, y), c.base.z);
+    }
+    if (this.stars) this.stars.material.opacity = f('stars');
+    if (A.clouds !== undefined) lerpHex(this.cloudMat.color, A.clouds, B.clouds, t);
+    this.playerLightNow = f('playerLight');
+    if (this.groundFog) this.groundFog.mesh.material.uniforms.uColor.value.copy(this.scene.fog.color);
   }
 
   update(dt, time, playerPos) {
@@ -324,6 +410,19 @@ export class World {
     }
     this.ambient?.update?.(dt, time, playerPos);
     this.groundFog?.update(playerPos);
+    this.weather?.update(playerPos);
+    // storm: occasional lightning flash across the sky; returns true on the frame thunder should play
+    let thunder = false;
+    this.thunderT -= dt;
+    if (this.thunderT <= 0) { this.thunderT = 7 + Math.random() * 12; this.flash = 1; thunder = true; }
+    this.flash = Math.max(0, this.flash - dt * 2.5);
+    const flicker = this.flash > 0 ? this.flash * (0.6 + 0.4 * Math.sin(time * 60)) : 0;
+    this.hemi.intensity = this.baseHemi * (1 + flicker * 3);
+    if (this.flash > 0 || this._flashed) {
+      this.sky.material.uniforms.uTop.value.set(this.level.sky.top).lerp(_ca.set(0x8fa0d8), flicker * 0.6);
+      this._flashed = this.flash > 0;
+    }
+    return thunder;
   }
 
   dispose() {

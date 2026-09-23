@@ -35,6 +35,12 @@ reward chest and two healing orbs before moving on. The gate closes behind you w
 The Butcher guards the dungeon; defeat the Vampire Lord in the throne room to win. Room objectives and colored gate markers
 on the top-right minimap guide the route. The radar rotates with your view: enemies above its player arrow are in front of you; red pickup dots mark healing orbs. The other three levels still use the original 25-wave survival mode.
 
+## Highlights
+
+- Anime cel-shaded look, ink outlines, weather (City rain, Castle snow) and a Village that turns from noon to night.
+- Horde roles: chargers, bombers (chain reactions), splitters, elite champions, and mid-wave horde events.
+- Bosses with real attack animations, weapon evolutions, dash, procedural soundtrack, console-style title screen.
+
 ## Structure
 
 Full technical handover: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Agent rules: [CLAUDE.md](CLAUDE.md).
