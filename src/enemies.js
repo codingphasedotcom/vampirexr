@@ -174,7 +174,7 @@ export class EnemyManager {
     this.scene.add(mesh);
     const t = { ...def, boss: true };
     const hp = def.hp * hpMul;
-    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1, age: 0, attack, attackT: 0, attackDur: 0 };
+    const e = { type: 'boss', t, x, z, hp, maxHp: hp, kind: 'normal', scale: 1, size: def.size, speed: def.size ? def.speed : 0, xp: def.xp, flash: 0, warn: 0, phase: 0, kx: 0, kz: 0, orbHit: -1, dead: false, mesh, walkClock, walkX: x, walkZ: z, s: {}, dmgMul: 1, age: 0, attack, attackT: 0, attackDur: 0 };
     this.list.push(e);
     this.counts.boss++;
     return e;

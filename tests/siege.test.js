@@ -5,7 +5,7 @@ function fixture() {
   const gates = [false,false,false], rewards=[];
   const g={player:{pos:{x:0,z:0}},world:{ambient:{setGate(i,v){if(i>=0)gates[i]=v;}}},bossFx:{reset(){}},hud:{toast(){}},sfx:{roar(){},levelup(){}},
     enemies:{list:[],get alive(){return this.list.length;},spawn(){const e={dead:false};this.list.push(e);return e;},spawnBoss(def){const e={t:def,dead:false};this.list.push(e);return e;}},
-    chests:{reset(){},spawn(){rewards.push('chest');}},gems:{spawnHeal(){}},pickType(){return 'ghoul';},victory(){this.won=true;}};
+    chests:{reset(){},spawn(){rewards.push('chest');}},gems:{spawnHeal(){}},spawnOpts(){return {};},pickType(){return 'ghoul';},victory(){this.won=true;}};
   return {g,s:new CastleSiege(g),gates,rewards};
 }
 test('all four rooms require their complete encounter; bosses precede completion',()=>{

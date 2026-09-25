@@ -2,7 +2,7 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-23 (top-down mode with 800-enemy hordes).
+> Last updated: 2026-09-24 (boss material color initialization fix).
 
 ## 1. What the game is
 
@@ -371,3 +371,12 @@ Playback multipliers relative to source clips: ghoul 1.8, brute 1.9, golem 1.5, 
 Static bats/wraiths and procedural fallbacks keep their existing shader motion. Game pauses stop movement clocks.
 `tests/animation.test.js` checks distance tracking, frame-rate independence, idle cadence, size compensation and teleports.
 Browser verification loaded all ten models and rendered 120 fixed-dt frames of blended horde and boss animation with no console errors. All 12 Node tests and production build pass. Quest GPU cost/comfort must still be checked on-device.
+
+
+### Boss material regression (2026-09-24)
+
+`spawnBoss` must initialize `warn: 0`, just like normal enemies. Warning decay and the emissive flash calculation both
+consume this field every frame. Leaving it undefined produces NaN RGB values and black boss models. Regression coverage
+in `tests/boss-material.test.js` runs all six boss definitions through spawn, warning, hit flash and death, checking finite
+emissive values. Browser verification loaded all six boss models and rendered 60 fixed-timestep frames with their textures
+and colors visible. Real Quest rendering remains an on-device check.
