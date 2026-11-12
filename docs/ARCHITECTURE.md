@@ -2,14 +2,16 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-09-24 (boss material color initialization fix).
+> Last updated: 2026-11-11 (v3 overhaul: baked lighting, procedural sky, decals/ribbons/instanced numbers, 3 new weapons,
+> relics, gold + Crypt meta-progression, revival, icon cards/HUD build row, banners, hit-stop, spatial audio, VR haptics).
 
 ## 1. What the game is
 
 A Vampire Survivors–style horde survival game built with **Three.js (r185) + WebXR**, playable in a **VR headset** (Quest,
 controllers or hand tracking), on **desktop** (keyboard+mouse or gamepad), with an anime art style. 25 waves, five bosses,
-auto-firing weapons plus a player-aimed revolver, level-ups, chests, three survival levels and Castle Siege. No backend, no build-time codegen: Vite +
-vanilla ES modules.
+auto-firing weapons plus a player-aimed revolver (eight weapons, each with an evolution), level-ups with six weapon / six
+passive slots, chests, floor relics, three survival levels and Castle Siege. Gold earned in runs buys permanent upgrades in
+the Crypt (§17). No backend, no build-time codegen: Vite + vanilla ES modules.
 
 - **Live site:** https://vampirexr.vercel.app (Vercel auto-deploys `main` of `github.com/codingphasedotcom/vampirexr`).
 - **Local dev:** `npm run dev` (http://localhost:5173). `npm run dev:vr` serves HTTPS on the LAN for a headset, but the user
@@ -29,9 +31,15 @@ CLAUDE.md             working rules for AI agents (deploy, testing, docs)
 
 src/main.js           creates `new Game()` and exposes `window.game` (used for headless testing)
 src/game.js           THE orchestrator: renderer/XR setup, state machine, wave director, menus, damage routing, per-frame loop
-src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level, music
+src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level, music, view,
+                      numbers, shake
+src/meta.js           persistent meta-progression (localStorage `survivorxr.meta`): gold, Crypt UPGRADES, records (§17)
+src/pickups.js        floor pickups: gold coins/bags + relics (Vampire Magnet, Holy Bomb, Frozen Hourglass, Roast Chicken),
+                      shock rings
+src/icons.js          procedural canvas icon set (weapons, passives, relics, Crypt) for cards, HUD row, title, pause screen
 src/avatar.js         HunterAvatar: procedural toon gunslinger shown only in top-down (walk cycle, aims, recoil)
-src/title.js          console-style desktop front end: splash, main menu, battlefield preview, settings, how-to (keys/mouse/gamepad)
+src/title.js          console-style desktop front end: splash, main menu, battlefield preview (+ records), the Crypt shop,
+                      settings, how-to (keys/mouse/gamepad)
 src/toon.js           cel-shading ramp, rim light, ink outlines (`toonShader`, `makeOutline`), stepped matcap for the revolver
 src/shadows.js        BlobShadows: one instanced draw of soft discs under creatures, chests and the player
 src/music.js          procedural soundtrack (Am–F–Dm–E), layers scale with `intensity`
@@ -41,28 +49,38 @@ src/enemies.js        ENEMY_TYPES, KINDS (fire/ice), EnemyManager (instanced hor
 src/creatures.js      procedural low-poly fallback models + shader animation material (FLAP / SHAMBLE / WAVE)
 src/models.js         GLB loading, normalization, vertex-animation-texture (VAT) baking, VAT material
 src/bosses.js         BOSSES defs + AI (dive, shockwave, ranged, teleport, charge, summon), BossFx (enemy projectiles, rings)
-src/weapons.js        Weapon base + Gun (player-aimed), Wand, Orbs, Aura, Lightning; WEAPONS list
-src/upgrades.js       PASSIVES + getChoices() (level-up / chest card pool)
+src/weapons.js        Weapon base + Gun (player-aimed), Wand, Orbs, Aura, Lightning, HolyWater, Cross, FrostNova; WEAPONS list
+src/upgrades.js       PASSIVES, MAX_WEAPONS / MAX_PASSIVES (6/6), getChoices() (level-up / chest card pool with icon/level/hint)
 src/gems.js           XP gems + red health orbs (instanced, magnet pull)
 src/chests.js         treasure chests with light beams (walk-in → free random upgrade)
-src/world.js          Colliders (grid of circles/segments), World (sky/fog/lights/ground/clouds from a level def), Drifters
+src/world.js          Colliders, LightBake (baked shadows + light pools, §16), World (procedural sky dome, ground blend,
+                      lights, clouds from a level def), Drifters, Weather, Flames, GroundFog
 src/levels/*.js       graveyard (night), village (day), city (night) — props with colliders; index.js exports LEVELS
-src/hud.js            camera-locked or wrist HUD canvas, boss bar, toasts, hurt vignette, comfort vignette
+src/hud.js            camera-locked or wrist HUD canvas (bars, wave, gold, build icon row), toasts, hurt/low-HP/glow
+                      vignette, comfort vignette; Banner (big wave / boss / evolution title cards)
 src/minimap.js        radar (forward-up), camera-fixed top-right
-src/menu.js           world-space card menu (VR ray/pinch, desktop gaze+click/keys/gamepad), logo + key art dressing
-src/fx.js             GlowLayer (immediate-mode additive point sprites), DamageNumbers, glowTexture, fxTime
+src/menu.js           world-space card menu (VR ray/pinch, desktop gaze+click/keys/gamepad), icon cards with level pips and
+                      evolution hints, entrance animation, 1 or 2 rows, logo + key art dressing
+src/fx.js             GlowLayer (additive point sprites), Ribbons (camera-facing additive strips), Decals (ground splats /
+                      scorches / cracks), DamageNumbers (instanced digit atlas), glowTexture, noiseTexture, fxTime
 src/particles.js      pooled additive particles (death bursts, hits)
-src/sfx.js            WebAudio SFX: oscillators + filtered noise through a limiter (no audio assets)
+src/sfx.js            WebAudio SFX: oscillators + filtered noise, reverb send, stereo panning by world position, pickup pitch
+                      ladder (no audio assets)
 src/utils.js          rand/clamp/pick/shuffle/fmtTime/canvas helpers
 ```
 
 ## 3. Frame loop & state machine (`game.js`)
 
 `renderer.setAnimationLoop(loop)`; `dt` is clamped to 50 ms. States: `menu | playing | levelup | gameover | paused`.
+**Game time scale:** `freeze(sec)` (hit-stop) and `slowMo(sec, scale)` produce `gdt = dt · scale`; `tick`, weapon `draw`,
+particles and damage numbers use `gdt`, while player movement, head tracking, HUD, music and banners always use real `dt`
+(so VR comfort is unaffected). Hit-stop: elite kill 0.07 s, big hit on the player 0.05 s, evolution 0.15 s, Holy Bomb 0.12 s;
+slow motion 0.25× for 1.8 s on a boss kill and 0.3× for 1.2 s on a revive.
 
 Per frame (`loop()`):
 1. `fxTime += dt` (wall clock for ambient shaders; `this.time` is *game* time and only advances while `playing`).
-2. `glow.begin()` — every glow consumer pushes points during the frame; `glow.end()` uploads once.
+2. `glow.begin()` / `ribbons.begin(head)` — every glow / ribbon consumer pushes geometry during the frame; `end()` uploads
+   only the used prefix once (`addUpdateRange`).
 3. VR: X/Y/A/B pause toggle, grip = dash. Desktop: `input.pollGamepad(dt)`; while the title is visible gamepad `uiEvents`
    (up/down/left/right/accept/back/any) go to `title.action()`; otherwise Start pause, A resume/restart, B dash. Music intensity
    eases toward 0.15 (menu) … 1.0 (boss + full horde).
@@ -74,8 +92,11 @@ Per frame (`loop()`):
    `composer.render()`: RenderPass into a 4× MSAA half-float target → OutputPass → GradeShader (saturation, contrast, level tint,
    vignette, red chromatic pulse when hurt, faint grain). **No bloom** (removed at the user's request).
 
-`tick(dt)`: time → `spawnDirector` → boss AI → `enemies.update` (returns contact damage) → weapons `update` → `bossFx.update`
-→ gems → chests → regen → contact damage (rumble/vignette throttled) → death check → victory check → level-up check.
+`tick(dt)`: time → `spawnDirector` → boss AI (skipped while the boss is frozen) → `enemies.update` (returns contact damage) →
+weapons `update` → `bossFx.update` → gems → chests → pickups → regen → contact damage (rumble/vignette throttled) → death check
+(a `player.revives` charge triggers `revive()` instead of `gameOver()`) → victory check → level-up check.
+Also per frame: `decals.update` (collapses expired decals), `banner.update`, `hud.layout`, sky follows the camera
+(`world.update(..., camPos)`), spatial-audio listener (`sfx.setListener`), low-HP heartbeat (<30% HP), `music.boss` flag.
 
 Menus are the same `Menu` class everywhere: `menu.show(title, sub, items, onPick, xr, {logo, art})`; each item has
 `{kind, title, sub, desc, apply}`. VR: point + trigger/pinch. Desktop: gaze at card + click/A, or keys 1–9, D-pad cycles.
@@ -112,8 +133,12 @@ Menus are the same `Menu` class everywhere: `menu.show(title, sub, items, onPick
 | Bosses | `BOSS_WAVES = {4: Bat Lord, 8: Grave Golem, 12: Necromancer, 17: Wraith Queen, 25: Vampire Lord}`. The Butcher exists in `BOSSES` but is unscheduled. `final: true` on the Vampire Lord → `victory()`. |
 | Chests | 1 per wave (2 on boss waves), 10–22 m away, never inside a collider, max 3 on field. Opening applies one random `getChoices()` item. |
 | Health orbs | 5% drop per kill, 3 per boss; heal 25% max HP. |
-| Level cap | `MAX_LEVEL = 30`; `xpNeeded(l) = floor(4 + 3l + 0.4l²)`. Multiple level-ups queue via `pendingLevels`. |
+| Level cap | `MAX_LEVEL = 30`; `xpNeeded(l) = floor(4 + 3l + 0.4l²)`. Multiple level-ups queue via `pendingLevels`. XP × `stats.growth`. |
+| Loot (`dropLoot`) | Boss: gold bag (30) + random relic. Elite: bag (10) + Magnet/Bomb/Hourglass. Horde (× 0.3 in top-down): relic rolls 0.3% Magnet, 0.15% Bomb, 0.15% Hourglass, 0.15% Chicken; 4% coin (brute coin = 3). Chests also give 5–12 gold. Pickup caps in `PICKUPS` (over-cap gold folds into an existing pile). |
+| Relics | Magnet: every gem + coin streams to you (`gems.vacuum`). Holy Bomb: everything within 22 m — horde killed, elites −50% max HP, bosses −6%. Hourglass: freezes all enemies 5 s (bosses 2.5 s). Chicken: heal 30% max HP. |
+| Revival | Crypt "Second Chance" gives `player.revives`; at 0 HP: back to 50% HP, 3 s invulnerable, enemy shots cleared, 250·hpMul blast + knockback within 9 m (bosses 5%), banner + slow-mo. |
 
+Bosses have an epithet (`title`) shown on the intro banner with a brass horn + roar (spatialized) and a boss music layer.
 **Boss AI** (`bosses.js`, one `ai(e, dt, game)` per boss, state in `e.s`): Bat Lord orbits at 7 m, dives every 5 s, summons bats;
 Golem winds up 1 s then `bossFx.shockwave` (expanding ring, 22 dmg if it passes you); Necromancer keeps 8–12 m, 3-shot spread
 every 3 s, raises 6 ghouls every 10 s; Wraith Queen teleports every 6 s, 8-way ring every 4 s, summons wraiths; Butcher charges
@@ -138,6 +163,12 @@ weapons via `forEachNear`/`nearestN`), moves toward the player (stop at `size/2 
 per-instance `aPhase`. Returns contact damage (`t.dmg · dmgMul · dt` for enemies within `stop + 0.3`).
 
 Bosses are single `Mesh`es (`spawnBoss`) in the same list with `t.boss = true`; flash uses `material.emissive`.
+**Freeze:** `e.frozenUntil > time` (Frost Nova, Hourglass) skips movement, roles, caster fire and contact damage, zeroes
+knockback, pauses the walk clock and tints the instance icy (bosses: emissive). With the Absolute Zero evolution
+(`game.frostBonus`) frozen enemies take +50% damage from everything.
+**Light probes:** `enemies.probe(x, z, outColor)` (set by the game to `World.probe`) multiplies each instance colour (boss:
+`material.color`) by the baked light at its feet, so creatures darken in baked shadows and glow warm under lamps (§16).
+Each type has a `blood` colour for its kill splat decal (fire casters leave scorch marks, ice casters frost splats).
 
 **Horde roles** (`ROLES`, rolled by `game.spawnOpts(type, tier)`; castle rooms pass their tier):
 - *Charger* (ghoul/brute, from wave 4, 8→25%): `chargerStep` — run → 0.75 s wind-up (stands still, red `warn` pulse) → 0.55 s
@@ -173,7 +204,10 @@ All weapons extend `Weapon` (`weapons.js`): `update(dt)` while playing, `draw(dt
 | Wand (Arcane Bolt, always owned) | bolts at nearest N enemies (22 m) | N `1 + ⌊(l−1)/2⌋`, dmg `14 + 4l`, faster at l≥4, pierce 3 at l≥6 |
 | Orbs (Spirit Orbs) | l orbs circling at 2.2 m·area, 0.45 s per-enemy hit cooldown, knockback | dmg `8 + 3l` |
 | Aura (Holy Ground) | ring radius `(2 + 0.3l)·area`, ticks every 0.5 s, knockback, shader ring | dmg `4 + 2l` |
-| Lightning (Thunder) | random targets within 14 m, jagged bolt + scorch + point-light flash | strikes `1 + ⌊l/2⌋`, dmg `24 + 9l`, cd `max(0.8, 2.2 − 0.15l)` |
+| Lightning (Thunder) | random targets within 14 m, forked ribbon bolt + scorch decal + point-light flash | strikes `1 + ⌊l/2⌋`, dmg `24 + 9l`, cd `max(0.8, 2.2 − 0.15l)` |
+| HolyWater | lobs flasks (0.5 s arc) at random enemies within 11 m; each leaves a burning pool (instanced shader disc) ticking every 0.35 s | flasks `1 + ⌊l/3⌋`, dmg `7 + 3l`/tick, radius `(1.4 + 0.12l)·area`, lasts `2.4 + 0.25l` s, cd `max(1.7, 3 − 0.15l)` |
+| Cross (Silver Cross) | boomerang toward the nearest enemy (17 m/s, decelerates, returns), hits each enemy once per pass, knockback | crosses `1 + ⌊(l−1)/3⌋`, dmg `16 + 6l`, cd `max(1.3, 2.4 − 0.1l)` |
+| FrostNova | ring bursts from the player: damage + freeze everything inside | dmg `12 + 5l`, radius `(3.6 + 0.35l)·area`, freeze `1 + 0.12l` s (bosses 30%), cd `max(2.6, 4.2 − 0.18l)` |
 
 Passives (`upgrades.js`, max 5 each): Might +15% dmg, Haste ×0.9 cooldown, Vigor +20 max HP & heal 20, Swiftness +10% speed,
 Magnet +1 m, Reach +12% area, Regeneration +0.6 HP/s, Armor −8% damage taken. `getChoices(game)` builds 3 random cards from
@@ -183,7 +217,15 @@ unowned weapons (NEW), upgradable weapons, and non-maxed passives, padding with 
 level ≥ 1 puts an `evolve` card first in `getChoices()` (chests grant it outright). `weapon.evolve()` sets `evolved`:
 Gun + Haste → Hellfire Repeater (2× rate, +30%, pierce 8, red tracers); Wand + Might → Arcane Storm (8 homing bolts, +50%,
 pierce 4); Orbs + Reach → Seraph Halo (12 orbs, 1.4× radius, faster, +60%); Aura + Armor → Sanctuary (1.5× radius, +50%,
-heals 0.5 per enemy burned, max 4/tick); Lightning + Swiftness → Tempest (half cooldown, each strike chains to 3 foes at 70%).
+heals 0.5 per enemy burned, max 4/tick); Lightning + Swiftness → Tempest (half cooldown, each strike chains to 3 foes at 70%);
+HolyWater + Regeneration → Blessed Flood (+1 flask, 1.6× pools lasting 2×, +50%, 2.5 HP/s while standing in one);
+Cross + Magnet → Grand Cross (4 crosses in a wide fan, 1.6× size, +40%, pulls every gem they pass);
+FrostNova + Vigor → Absolute Zero (1.4× radius, +50%, 2.5 s freeze, frozen foes take +50% from everything).
+Every passive pairs with exactly one weapon (unit-tested).
+
+**Build slots:** `MAX_WEAPONS = 6` (Revolver + Arcane Bolt included) and `MAX_PASSIVES = 6`; NEW cards stop appearing once the
+slots are full. Cards carry `{kind, icon, title, sub, level, max, desc, hint}`: the icon, level pips and an evolution hint
+("Evolves with Haste" / "Evolves Revolver") are drawn on the card. Padding cards: Roast Chicken (heal 30) / Gold Pouch (+25).
 
 All damage goes through `game.hitEnemy(e, dmg, {quiet, precision, src})` → flash, damage number, sfx, kill handling (gems,
 orbs, particles, boss bookkeeping, victory). `src` accumulates `game.stats.damage[weaponId]` for the Run Stats card on the
@@ -198,7 +240,8 @@ optional `groundVariation`, `playerLight` intensity, `ground()` texture factory,
 `World` puts everything in one group so `dispose()` swaps cleanly; `applyLevelLook()` rebuilds when `settings.level` changes
 (desktop select on the title screen; VR main menu "Level" card cycles).
 
-- **Graveyard** (night): cobblestones, tombstones, crosses, dead trees, pillars, iron fences, fireflies.
+- **Graveyard** (night): irregular cobbles + mossy-earth patches, tombstones, crosses, dead trees, pillars, iron fences,
+  braziers (baked warm pools), fireflies.
 - **Village** (day): grass, 22 instanced cottages (walls/pyramid roofs/chimneys/doors/emissive windows, rotated-rect colliders),
   leafy trees, wooden fences, hay bales, barrels, crates, a well, pollen.
 - **City** (night): pavement, road grid every 40 m with dashed lines, 4 instanced tower variants with window map+emissiveMap,
@@ -206,8 +249,15 @@ optional `groundVariation`, `playerLight` intensity, `ground()` texture factory,
 
 `Colliders`: circles `{x,z,r}` and segments `{x1,z1,x2,z2,r}` (+ `addBox`), 6 m grid, `resolve(x,z,r,out)`.
 
-Look: after `build()`, `toonify()` converts every Lambert prop to a toon material (set `userData.keepMaterial` to opt out). The
-ground keeps Lambert with `macroVariation` (two octaves of `noiseTexture()` to hide tiling). `GroundFog` is one transparent
+Look: after `build()`, `toonify()` converts every Lambert prop to a toon material (set `userData.keepMaterial` to opt out) that
+also reads the light bake (`bakeProps`; `userData.bakeGround` = flat surfaces like City roads take full baked shadows). The
+ground (`groundMaterial`) samples its texture twice (second copy rotated/rescaled) swapped by noise, blends an optional second
+surface (`groundAlt`: graveyard mossy earth, village dirt, city wet asphalt, castle snow; `groundAltMask: [lo, hi]`,
+`groundAltScale`) in organic patches, adds macro light/dark noise and the bake (5 texture reads + 1 bake read).
+**Sky:** one shader dome (`SKY_FRAG`) in `skyGroup`, which follows the camera (moon/sun and clouds too): gradient + horizon
+glow, a hashed 3D-cell star field that twinkles (`uStars`, driven by the day cycle), nebula wisps from two noise reads
+(`level.nebula: {a, b, strength}`) and dithering. Drawn after opaques (`renderOrder 50`, depth-tested) so early-z skips pixels
+behind the ground. The moon has limb darkening + maria (`celestialMaterial`). `GroundFog` is one transparent
 noise-scrolled disc (42 m) following the player. `Weather` (level `weather: { type: 'rain'|'snow', count, thunder }`) is one
 draw call — drops live in a box that wraps around the player and are animated purely in the vertex shader; City has rain with
 lightning (`World.update` returns true on a thunder frame → `sfx.thunder()`, hemi light + sky flash), Castle Siege has snow.
@@ -241,8 +291,16 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
 
 ## 10. HUD, menus, art
 
-- `Hud`: 512×184 canvas plane. Rows: boss bar (top, when a boss is alive), HP, XP, `LV / WAVE n/25 (+remaining·time) / kills`;
-  toasts replace the bottom line. VR `settings.hud`: `wrist` (panel floats 12 cm above the off-hand, faces the head; a slim
+- `Hud`: 512×232 canvas plane. Rows: boss bar (top, when a boss is alive), HP (✚ = revive available), XP, dash, `LV / WAVE n/25
+  / kills` with time, remaining and run gold underneath; toasts replace that line; the bottom **build row** shows six weapon
+  slots (level, MAX, ★ evolved) and six passive slots using `icons.js`. `hud.layout(xr, fov)` keeps the camera-mode panel
+  inside the 52° top-down view. The edge vignette is white-textured and tinted: red for hurt and the low-HP heartbeat pulse,
+  any colour for `hud.glow(color, amount)` flashes (level-up, evolution, relics, boss intro, revive).
+- `Banner` (hud.js): camera-attached 1024×256 title card (kicker, Cinzel title, subtitle) for wave starts (`WAVE_INTRO` tips
+  for first appearances), boss intros (name + epithet), evolutions, boss kills, siege chambers and revives. Pops in, fades out,
+  hidden whenever a card menu opens; 1 m wide at 1.6 m in VR.
+- Pause (desktop `#overlay`): `buildHTML()` lists weapon/passive icons with levels, time, kills and run gold.
+- End screen: Try Again · Run Stats (damage per weapon + gold earned / banked) · Main Menu; the subtitle announces new records. VR `settings.hud`: `wrist` (panel floats 12 cm above the off-hand, faces the head; a slim
   camera-locked "alerts" strip keeps boss HP + toasts) or `camera` (fixed at bottom of view). Hurt vignette and comfort vignette
   (peripheral darkening while moving/turning in VR) are camera children.
 - `Minimap`: 256 px canvas, 32 m range, forward-up (`ctx.rotate(+yaw)` — sign matters), top-right: desktop uses camera FOV/aspect with 0.13 m edge inset; XR uses (0.4, 0.28, −0.9).
@@ -253,12 +311,14 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
   (D-pad or left stick, A/Start, B). Logo is alpha-keyed from black at runtime. `#overlay` is only the in-game PAUSED screen.
 - Revolver: primitives with a stepped matcap (`matcapMaterial`) so the player's lantern can't blow it out, glowing rune channel,
   back-face ink outline.
-  VR main menu shows the logo (alpha-keyed from black at runtime) above cards with the key art behind.
+  VR main menu shows the logo (alpha-keyed from black at runtime) above cards with the key art behind: Start · Level · The
+  Crypt · Settings. Menus with more than five cards (VR Crypt pages, VR settings) use two rows of 0.78× cards.
 
 ## 11. Settings
 
 `settings.js` → localStorage. Keys: `turn` (`smooth|snap`), `turnSpeed` (deg/s), `vignette` (bool), `hud` (`wrist|camera`),
-`level` (`graveyard|village|city|castle`), `music` (bool). Editable from the title screen and the in-VR Settings cards.
+`level` (`graveyard|village|city|castle`), `music` (bool), `view` (`fps|topdown`), `numbers` (damage numbers, bool), `shake`
+(desktop camera shake, bool). Editable from the title screen and the in-VR Settings cards (shake is desktop-only).
 
 ## 12. Testing without a headset (important)
 
@@ -278,8 +338,15 @@ controller objects have `matrixAutoUpdate = false` — set `.matrix` or call `up
 while a test runs triggers a Vite reload and invalidates `window.game`; dynamic `import()` in the console may get a different
 module instance than the game (use the DOM selects to change settings).
 
-VR-specific code paths (controller rays, thumbsticks, hand tracking, wrist HUD) cannot be exercised here — the user tests them
-on a Quest via the Vercel URL and reports back.
+VR-specific code paths (controller rays, thumbsticks, hand tracking, wrist HUD, controller haptics) cannot be exercised here —
+the user tests them on a Quest via the Vercel URL and reports back.
+
+Gotchas found in practice: the pane's screenshot often shows the *previous* composited frame right after a big change
+(level switch, view switch) — run a couple of `game.loop()`s and screenshot twice. Classes imported in the console with
+`import('/src/weapons.js')` after a hot reload can be a different module instance, so `instanceof` checks in `getChoices`
+won't match them. Keep single `javascript_tool` calls under ~40 s of simulation (the tool times out at 45 s).
+`node --test tests/*.test.js` runs 23 tests (aim, animation, boss materials, minimap, siege, Crypt economy/records, build
+slots/evolutions, freeze, light probes).
 
 ### Precision combat verification
 
@@ -316,10 +383,11 @@ A Vampire Survivors-style overhead camera. VR ignores the setting (`game.topdown
 ## 13. Known gaps / ideas not yet done
 
 - No touch controls (phones can view the title page only).
-- No audio files (procedural music + SFX only). No haptics in VR (gamepad rumble only).
+- No audio files (procedural music + SFX only). VR controller haptics are implemented (`input.pulse`) but untested on-device.
 - The Butcher appears in Castle Siege; it is still unscheduled in survival.
-- No meta-progression.
-- Balance numbers (§5) were tuned with a headless bot, not with real VR play.
+- No characters to choose from yet (the Crypt is the only meta layer); no new enemy models (generation costs credits).
+- Balance numbers (§5, §7, §17 gold economy) were tuned with a headless bot, not with real VR play.
+- The light bake covers ±100 m (the arena is r 90); dynamic lights (player lantern, lightning flash) stay real-time.
 
 
 ## 14. Castle Siege (`src/siege.js`, `src/levels/castle.js`)
@@ -380,3 +448,49 @@ consume this field every frame. Leaving it undefined produces NaN RGB values and
 in `tests/boss-material.test.js` runs all six boss definitions through spawn, warning, hit flash and death, checking finite
 emissive values. Browser verification loaded all six boss models and rendered 60 fixed-timestep frames with their textures
 and colors visible. Real Quest rendering remains an on-device check.
+
+
+## 16. Baked lighting (`world.js` `LightBake`, `bakeUniforms`)
+
+Real-time shadows are too expensive on a Quest and the props are scattered at load time (no lightmap UVs), so lighting is
+baked **at level load** into one 1024² RGBA `DataTexture` covering ±100 m (≈20 cm/px):
+
+- **A = occlusion** (white = open): soft contact AO blobs under every caster plus long sun/moon shadows swept along the level's
+  key light (`level.key.position`; length = height × cot(elevation), clamped to `level.bake.maxLen`, strength
+  `level.bake.shadow`). Round casters sweep a capsule, boxes sweep the convex hull of their footprint (raised boxes such as
+  castle arch ribs cast offset stripes). Drawn with `ctx.filter = blur(1.5px)` where supported.
+- **RGB = light pools** added together ('lighter'): graveyard braziers, City sodium street lamps and neon spill, castle torches,
+  village windows (night only).
+- Casters come from `bake.circle/box/segment` calls in each level's `build(group, colliders, bake)` plus every collider that
+  declares a height `h` (and strength `k`): `scatter(..., radiusFn, heightFn, k)` and colliders like fences
+  (`{…, h: 1.3, k: 0.35}`) feed it automatically.
+- **Readers:** the ground shader (full occlusion, light × albedo × 2.6 as emissive), every toonified prop (`bakeProps`: 40% of
+  the occlusion + contact darkening below 1.1 m, light pools on the lower 7 m only so towers don't glow to the roof), and
+  creatures via the CPU probe (`World.probe`) — no extra GPU work for the horde.
+- `bakeUniforms.uBakeLight / uBakeShadow` scale the two halves; the Village day cycle fades window light in at dusk and sun
+  shadows out at night. Build cost ≈ 30–100 ms once per level (City has ~215 lights). `World.dispose()` frees the texture.
+
+## 17. Meta-progression, gold and records (`meta.js`, `title.js`, `game.js`)
+
+- **Gold** comes from coins/bags (`pickups.js`), chests and a completion bonus: `runReward = picked + 3·wave + 20·rooms
+  (+150 victory)`, scaled by `stats.greed` at pickup. `finishRun(won)` banks it once per run and records per-battlefield bests
+  (`time, wave/chamber, kills, level, wins`); beaten records are announced on the end screen.
+- **The Crypt** (`UPGRADES`, cost `round(base·(1 + 0.75·rank)/5)·5`): Vitality (+10% HP ×5), Bloodlust (+5% dmg ×5), Iron Hide
+  (−3% dmg taken ×3), Fleet Foot (+5% speed ×3), Quick Hands (−3% cooldown ×3), Wide Ward (+5% area ×3), Attraction (+0.5 m ×3),
+  Recovery (+0.15 HP/s ×3), Growth (+6% XP ×5), Greed (+12% gold ×5), Second Chance (1 revive, 900). `applyMeta(player)` runs
+  on every `start()`. Refund All returns every coin. Desktop: title → Crypt; VR: main menu → The Crypt (pages of 8 cards).
+- Player armor is capped at 70% damage reduction.
+
+## 18. Feel, audio and haptics
+
+- **Juice:** hit-stop / slow-mo (§3), banners, edge-glow flashes, kill splat decals (`Decals`, ring buffer of 320, fade by
+  themselves; scorch for fire/bomber/lightning, cracks for golem slams and boss deaths), ribbons for lightning (forked),
+  tracers, wand/cross/orb trails and the dash streak, instanced damage numbers (`DamageNumbers`: 260 numbers × 6 digits, one
+  draw; heals/gold use a `+` glyph; 1.7× in top-down), crystal gem shader, fresnel spirit orbs, chest light shaft with a
+  lid-flip opening, top-down player ring and a 2.6× brighter lantern pool with a slight exposure lift.
+- **Audio (`sfx.js`):** reverb send (generated 1.4 s impulse), stereo panning + distance falloff for boss roars, explosions,
+  enemy shots, lightning and splashes (`spatial(x, z)` against `setListener`), gunshot pitch spread, XP pickups climbing a major
+  scale while they chain, new SFX for coins, chests, relics, new weapons, revive, boss horn, heartbeat and victory. Music adds a
+  boss layer (war toms + minor-second stabs) while a boss lives.
+- **VR haptics:** `input.pulse(intensity, ms, hand)` on `gamepad.hapticActuators[0]`; the revolver kicks only the firing hand,
+  `rumble()` also pulses both controllers (hurt, level-up, relics, heartbeat, revive).

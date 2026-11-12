@@ -14,13 +14,26 @@ export const castle = {
   rimLight: { color: 0xc9b8ff, strength: 0.55 },
   weather: { type: 'snow', count: 1400 },
   topdownClip: 7.4,
+  bake: { shadow: 0.45, maxLen: 8 },
+  nebula: { a: 0x4a5aaa, b: 0x7a4aaa, strength: 0.3 },
+  // drifted snow settles in patches over the flagstones
+  groundAlt: () => tileTexture(256, 100, (g, s) => {
+    g.fillStyle = '#d3d8e8'; g.fillRect(0, 0, s, s);
+    for (let i = 0; i < 40; i++) {
+      const x = Math.random() * s, y = Math.random() * s, r = 10 + Math.random() * 30, grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, Math.random() < 0.5 ? 'rgba(170,180,215,0.45)' : 'rgba(255,255,255,0.6)'); grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    for (let i = 0; i < 300; i++) { g.fillStyle = 'rgba(255,255,255,0.8)'; g.fillRect(Math.random() * s, Math.random() * s, 1.5, 1.5); }
+  }),
+  groundAltMask: [0.56, 0.72], groundAltScale: 1.3,
   ground: () => tileTexture(256, 100, (g, s) => {
     g.fillStyle = '#484557'; g.fillRect(0, 0, s, s);
     for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) {
       g.fillStyle = (x + y) % 2 ? '#716b7e' : '#625d70'; g.fillRect(x * 64 + 2, y * 64 + 2, 60, 60);
     }
   }),
-  build(group, col) {
+  build(group, col, bake) {
     const boxes = [], lamps = [], gates = [];
     const add = (x,y,z,w,h,d,color,rz=0) => boxes.push({x,y,z,w,h,d,color,rz});
     const wall = (x1,z1,x2,z2) => {
@@ -84,6 +97,9 @@ export const castle = {
       }
     }
     // All static masonry/furniture is one draw call with instance colors.
+    // baked shadows from every block (high arch ribs throw stripes across the floor) and warm torch pools
+    for (const b of boxes) if (b.h >= 0.15) bake.box(b.x, b.z, b.w / 2, b.d / 2, 0, b.y + b.h / 2, 0.8, Math.max(0, b.y - b.h / 2));
+    for (const p of lamps) bake.light(p.x, p.z, 6, 0xffa648, 0.9);
     const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshLambertMaterial({color:0xffffff}),boxes.length);
     const d=new THREE.Object3D(), color=new THREE.Color();
     boxes.forEach((b,i)=>{d.position.set(b.x,b.y,b.z);d.rotation.set(0,0,b.rz);d.scale.set(b.w,b.h,b.d);d.updateMatrix();mesh.setMatrixAt(i,d.matrix);mesh.setColorAt(i,color.setHex(b.color));});group.add(mesh);

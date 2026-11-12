@@ -30,6 +30,30 @@ function grassTexture() {
   });
 }
 
+// Dirt-path patches blended into the grass.
+function dirtTexture() {
+  return tileTexture(512, 110, (g, S) => {
+    g.fillStyle = '#8c7350'; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 60; i++) {
+      const x = rand(0, S), y = rand(0, S), r = rand(20, 70), grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, Math.random() < 0.5 ? 'rgba(110,86,52,0.5)' : 'rgba(170,140,95,0.4)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    for (let i = 0; i < 260; i++) {
+      const x = rand(0, S), y = rand(0, S), r = rand(1.5, 4);
+      g.fillStyle = pick(['#a89070', '#6f5a40', '#c2ab86', '#7d6a55']);
+      g.beginPath(); g.ellipse(x, y, r * 1.3, r, rand(0, 3), 0, Math.PI * 2); g.fill();
+    }
+    g.lineWidth = 2;
+    for (let i = 0; i < 160; i++) {
+      const x = rand(0, S), y = rand(0, S);
+      g.strokeStyle = `rgba(${Math.round(rand(90, 140))},${Math.round(rand(140, 180))},${Math.round(rand(50, 80))},0.6)`;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-3, 3), y - rand(4, 9)); g.stroke();
+    }
+  });
+}
+
 function leafyTree() {
   const trunk = new THREE.CylinderGeometry(0.18, 0.28, 2.4, 7).translate(0, 1.2, 0);
   const canopy = mergeGeometries([
@@ -42,7 +66,7 @@ function leafyTree() {
 }
 
 // Cottage parts are instanced by type; each house is a wall box, a pyramid roof, a chimney, a door and a few windows.
-function buildHouses(group, col, count) {
+function buildHouses(group, col, count, bake) {
   const walls = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xffffff }), count);
   const roofs = new THREE.InstancedMesh(new THREE.ConeGeometry(0.72, 1, 4).rotateY(Math.PI / 4), new THREE.MeshLambertMaterial({ color: 0xffffff }), count);
   const chimneys = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 1.4, 0.6), new THREE.MeshLambertMaterial({ color: 0x6b5a50 }), count);
@@ -74,6 +98,9 @@ function buildHouses(group, col, count) {
       _d.position.set(x - fx * (dpt / 2 + 0.06) + rx * side * w * 0.3, 2.0, z - fz * (dpt / 2 + 0.06) + rz * side * w * 0.3); _d.updateMatrix();
       windows.setMatrixAt(wi++, _d.matrix);
     }
+    // baked shadow (roof included) and warm window light that comes on at dusk
+    bake.box(x, z, w / 2, dpt / 2, -yaw, h + rh * 0.55, 0.85);
+    for (const side of [-1, 1]) for (const face of [-1, 1]) bake.light(x + face * fx * (dpt / 2 + 1.2) + rx * side * w * 0.3, z + face * fz * (dpt / 2 + 1.2) + rz * side * w * 0.3, 3.6, 0xffc27a, 0.8);
     // collider: rotated rectangle as four wall segments
     const hx = w / 2 + 0.25, hz = dpt / 2 + 0.25;
     const corners = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]].map(([cx, cz]) => [x + cx * rx + cz * fx, z + cx * rz + cz * fz]);
@@ -96,6 +123,7 @@ export const village = {
   playerLight: 0,
   rimLight: { color: 0xfff1d6, strength: 0.4 },
   // The village slowly slides from noon through sunset into night over a run: survive until dark.
+  bake: { shadow: 0.5, maxLen: 9 },
   dayCycle: { duration: 720, keys: [
     { t: 0, top: 0x3f7fd8, horizon: 0xc9e2ff, fog: 0xc9e2ff, fogDensity: 0.011, hemiSky: 0xbfdfff, hemiGround: 0x5a6a3a, hemi: 1.3,
       keyColor: 0xfff2d6, key: 2.4, sunY: 170, sunGlow: 0xfff0c0, stars: 0, playerLight: 0, clouds: 0xffffff },
@@ -104,9 +132,11 @@ export const village = {
     { t: 1, top: 0x04050e, horizon: 0x1b2040, fog: 0x161a30, fogDensity: 0.02, hemiSky: 0x5060a0, hemiGround: 0x1a1620, hemi: 0.85,
       keyColor: 0x9fb0ff, key: 0.9, sunY: -40, sunGlow: 0x7f8cff, stars: 0.9, playerLight: 12, clouds: 0x262b44 },
   ] },
+  nebula: { a: 0x2a4a9a, b: 0x2a8a8a, strength: 0.35 },
   ground: grassTexture,
-  build(group, col) {
-    buildHouses(group, col, 22);
+  groundAlt: dirtTexture, groundAltMask: [0.56, 0.68],
+  build(group, col, bake) {
+    buildHouses(group, col, 22, bake);
     const { trunk, canopy } = leafyTree();
     const trunks = new THREE.InstancedMesh(trunk, new THREE.MeshLambertMaterial({ color: 0x5a3d26 }), 60);
     const canopies = new THREE.InstancedMesh(canopy, new THREE.MeshLambertMaterial({ color: 0x3f8a3a, flatShading: true }), 60);
@@ -117,15 +147,17 @@ export const village = {
       trunks.setMatrixAt(i, _d.matrix); canopies.setMatrixAt(i, _d.matrix);
       canopies.setColorAt(i, c.setHSL(0.28 + rand(-0.04, 0.04), 0.55, rand(0.32, 0.45)));
       col.add({ x: _d.position.x, z: _d.position.z, r: 0.35 * s });
+      bake.circle(_d.position.x, _d.position.z, 0.3 * s, 2.4 * s, 0.55);              // trunk
+      bake.circle(_d.position.x, _d.position.z, 1.6 * s, 4.6 * s, 0.6, 2.0 * s);       // canopy, off the ground
     }
     group.add(trunks, canopies);
     fenceRuns(group, col, new THREE.MeshLambertMaterial({ color: 0x8a6a3a }), 12, 12, 80);
     group.add(scatter(new THREE.InstancedMesh(new THREE.CylinderGeometry(0.8, 0.8, 1.4, 12).rotateZ(Math.PI / 2).translate(0, 0.8, 0),
-      new THREE.MeshLambertMaterial({ color: 0xd9b45a }), 20), 20, 10, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 0.85));
+      new THREE.MeshLambertMaterial({ color: 0xd9b45a }), 20), 20, 10, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 0.85, () => 1.6));
     group.add(scatter(new THREE.InstancedMesh(new THREE.CylinderGeometry(0.42, 0.38, 1.0, 10).translate(0, 0.5, 0),
-      new THREE.MeshLambertMaterial({ color: 0x6b4a2a }), 25), 25, 8, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 0.45));
+      new THREE.MeshLambertMaterial({ color: 0x6b4a2a }), 25), 25, 8, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 0.45, () => 1.0));
     group.add(scatter(new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0),
-      new THREE.MeshLambertMaterial({ color: 0xb08a55 }), 25), 25, 8, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); d.scale.setScalar(rand(0.7, 1.2)); }, col, (d) => 0.7 * d.scale.x));
+      new THREE.MeshLambertMaterial({ color: 0xb08a55 }), 25), 25, 8, 80, (d) => { d.rotation.set(0, rand(0, 6.28), 0); d.scale.setScalar(rand(0.7, 1.2)); }, col, (d) => 0.7 * d.scale.x, (d) => d.scale.y));
     // the village well
     const well = new THREE.Group();
     well.add(new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 1.0, 14).translate(0, 0.5, 0), new THREE.MeshLambertMaterial({ color: 0x8a8a8a })));
@@ -133,7 +165,7 @@ export const village = {
     well.add(new THREE.Mesh(new THREE.ConeGeometry(1.5, 0.8, 4).rotateY(Math.PI / 4).translate(0, 2.8, 0), new THREE.MeshLambertMaterial({ color: 0x8a3b2f })));
     well.position.set(12, 0, -8);
     group.add(well);
-    col.add({ x: 12, z: -8, r: 1.3 });
+    col.add({ x: 12, z: -8, r: 1.3, h: 2.9, k: 0.8 });
     return new Drifters(group, { count: 60, color: 0xffffcc, size: 0.1, opacity: 0.5, minY: 0.3, maxY: 3.2, speed: 0.6 });
   },
 };

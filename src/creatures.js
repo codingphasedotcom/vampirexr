@@ -112,7 +112,7 @@ const ANIM = /* glsl */ `
 // Cel-shaded toon material with vertex colors (or a texture map), per-instance phase, limb animation,
 // emissive eyes and rim light. `outline` > 0 builds the matching ink-outline pass instead.
 export function creatureMaterial(mode, { speed = 7, hip = 0.55 } = {}, map = null, { outline = 0 } = {}) {
-  const mat = map ? toonMaterial({ map }) : toonMaterial({ vertexColors: true, flatShading: true });
+  const mat = map ? toonMaterial({ map }) : toonMaterial({ vertexColors: true });
   mat.defines = { [mode]: '', ANIM_SPEED: speed.toFixed(2), HIP: hip.toFixed(2) };
   if (outline) makeOutline(mat, outline);
   mat.customProgramCacheKey = () => `${mode}-${speed}-${hip}-${map ? 'map' : 'vc'}-${outline}`;

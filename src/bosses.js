@@ -118,7 +118,7 @@ function teleport(g, e, dist) {
   const a = rand(0, Math.PI * 2), p = g.player.pos;
   e.x = p.x + Math.cos(a) * dist; e.z = p.z + Math.sin(a) * dist;
   g.particles.burst(e.x, e.t.y, e.z, e.t.color, 30, 5);
-  g.sfx.zap();
+  g.sfx.zap(e.x, e.z);
 }
 const tick = (s, key, dt, init) => { if (s[key] === undefined) s[key] = init; s[key] -= dt; if (s[key] <= 0) { s[key] = init; return true; } return false; };
 
@@ -137,7 +137,7 @@ const AI = {
       if (tick(s, 'dive', dt, 5)) {
         const ddx = p.x - e.x, ddz = p.z - e.z, dd = Math.hypot(ddx, ddz) || 1;
         s.vx = ddx / dd * 13; s.vz = ddz / dd * 13; s.diving = 1.1;
-        g.sfx.roar();
+        g.sfx.roar(e.x, e.z);
       }
     }
     if (tick(s, 'spawn', dt, 8)) summon(g, e, 'bat', 6, 2);
@@ -147,7 +147,7 @@ const AI = {
     const s = e.s;
     if (s.wind > 0) {
       s.wind -= dt; e.warn = 1; // red telegraph pulse
-      if (s.wind <= 0) { g.bossFx.shockwave(e.x, e.z, 9, 22); g.sfx.roar(); }
+      if (s.wind <= 0) { g.bossFx.shockwave(e.x, e.z, 9, 22); g.sfx.roar(e.x, e.z); g.sfx.boom?.(e.x, e.z, 1.6); g.decals?.add(e.x, e.z, 3.2, 0x140a10, 2, 25); g.addShake?.(0.5); }
       return;
     }
     const d = toward(e, dt, g, e.t.speed, e.t.size * 0.5 + 0.45);
@@ -177,7 +177,7 @@ const AI = {
       if (s.wind <= 0) {
         const p = g.player.pos, dx = p.x - e.x, dz = p.z - e.z, d = Math.hypot(dx, dz) || 1;
         s.vx = dx / d * 15; s.vz = dz / d * 15; s.dash = 0.7; e.dmgMul = 2.5;
-        g.sfx.roar();
+        g.sfx.roar(e.x, e.z);
       }
       return;
     }
@@ -201,20 +201,20 @@ const AI = {
 
 // One boss per five levels. `y` is the visual centre; `size` drives contact range and hitscan radius.
 export const BOSSES = [
-  { level: 5,  name: 'Bat Lord',     hp: 900,   speed: 6,   dmg: 12, size: 2.2, y: 3.6, color: 0xb36bff, xp: 40,  fly: true, build: batLordGeometry, anim: ['FLAP'], ai: AI.batLord,
+  { level: 5,  name: 'Bat Lord', title: 'Sovereign of the night sky',     hp: 900,   speed: 6,   dmg: 12, size: 2.2, y: 3.6, color: 0xb36bff, xp: 40,  fly: true, build: batLordGeometry, anim: ['FLAP'], ai: AI.batLord,
     model: { url: '/models/batlord.glb', height: 2.8, lift: 1.6, yaw: 0, animated: false } },
-  { level: 10, name: 'Grave Golem',  hp: 2200,  speed: 1.2, dmg: 20, size: 3.2, y: 2.2, color: 0x9dff70, xp: 60,  build: golemGeometry, anim: ['SHAMBLE', { speed: 3, hip: 1.3 }], ai: AI.golem,
+  { level: 10, name: 'Grave Golem', title: 'The earth itself rises',  hp: 2200,  speed: 1.2, dmg: 20, size: 3.2, y: 2.2, color: 0x9dff70, xp: 60,  build: golemGeometry, anim: ['SHAMBLE', { speed: 3, hip: 1.3 }], ai: AI.golem,
     model: { url: '/models/golem.glb', height: 4.5, yaw: 0, rate: 1.5 },
     attackModel: { url: '/models/golem_attack.glb', height: 4.5, yaw: 0 } },
-  { level: 15, name: 'Necromancer',  hp: 3200,  speed: 2.0, dmg: 10, size: 1.8, y: 1.8, color: 0x7dff9a, xp: 80,  build: necroGeometry, anim: ['WAVE'], ai: AI.necro,
+  { level: 15, name: 'Necromancer', title: 'Master of the restless dead',  hp: 3200,  speed: 2.0, dmg: 10, size: 1.8, y: 1.8, color: 0x7dff9a, xp: 80,  build: necroGeometry, anim: ['WAVE'], ai: AI.necro,
     model: { url: '/models/necro.glb', height: 3.2, yaw: 0, rate: 1.8 },
     attackModel: { url: '/models/necro_attack.glb', height: 3.2, yaw: 0 } },
-  { level: 20, name: 'Wraith Queen', hp: 5000,  speed: 3.5, dmg: 16, size: 2.0, y: 2.6, color: 0x9ff8ff, xp: 100, fly: true, build: queenGeometry, anim: ['WAVE'], ai: AI.queen,
+  { level: 20, name: 'Wraith Queen', title: 'Veiled sorrow, endless hunger', hp: 5000,  speed: 3.5, dmg: 16, size: 2.0, y: 2.6, color: 0x9ff8ff, xp: 100, fly: true, build: queenGeometry, anim: ['WAVE'], ai: AI.queen,
     model: { url: '/models/queen.glb', height: 3.6, lift: 0.4, yaw: 0, animated: false } },
-  { level: 25, name: 'The Butcher',  hp: 8000,  speed: 1.8, dmg: 30, size: 3.0, y: 2.6, color: 0xff3b3b, xp: 130, build: butcherGeometry, anim: ['SHAMBLE', { speed: 4, hip: 1.2 }], ai: AI.butcher,
+  { level: 25, name: 'The Butcher', title: 'Meat for the cleaver',  hp: 8000,  speed: 1.8, dmg: 30, size: 3.0, y: 2.6, color: 0xff3b3b, xp: 130, build: butcherGeometry, anim: ['SHAMBLE', { speed: 4, hip: 1.2 }], ai: AI.butcher,
     model: { url: '/models/butcher.glb', height: 4.5, yaw: 0, rate: 1.8 },
     attackModel: { url: '/models/butcher_attack.glb', height: 4.5, yaw: 0 } },
-  { level: 30, name: 'Vampire Lord', hp: 14000, speed: 2.6, dmg: 24, size: 2.2, y: 2.6, color: 0xff2a6d, xp: 200, build: vampireGeometry, anim: ['WAVE'], ai: AI.vampire, final: true,
+  { level: 30, name: 'Vampire Lord', title: 'Master of the eternal night', hp: 14000, speed: 2.6, dmg: 24, size: 2.2, y: 2.6, color: 0xff2a6d, xp: 200, build: vampireGeometry, anim: ['WAVE'], ai: AI.vampire, final: true,
     model: { url: '/models/vampire.glb', height: 3.5, yaw: 0, rate: 1.7 },
     attackModel: { url: '/models/vampire_attack.glb', height: 3.5, yaw: 0 } },
 ];

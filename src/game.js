@@ -10,7 +10,7 @@ import { Player } from './player.js';
 import { EnemyManager, KINDS } from './enemies.js';
 import { Gems } from './gems.js';
 import { Particles } from './particles.js';
-import { Hud } from './hud.js';
+import { Hud, Banner } from './hud.js';
 import { Menu } from './menu.js';
 import { Sfx } from './sfx.js';
 import { Music } from './music.js';
@@ -21,12 +21,15 @@ import { Minimap } from './minimap.js';
 import { getChoices, evolutionChoices } from './upgrades.js';
 import { World } from './world.js';
 import { LEVELS, levelById } from './levels/index.js';
-import { GlowLayer, DamageNumbers, fxTime } from './fx.js';
-import { rand, fmtTime } from './utils.js';
+import { GlowLayer, DamageNumbers, Ribbons, Decals, DECAL, fxTime } from './fx.js';
+import { rand, pick, fmtTime } from './utils.js';
 import { CastleSiege, confine } from './siege.js';
 import { settings, saveSettings } from './settings.js';
 import { TitleScreen } from './title.js';
 import { HunterAvatar } from './avatar.js';
+import { Pickups, PICKUPS, RELICS } from './pickups.js';
+import { meta, applyMeta, saveMeta, recordRun, runReward, UPGRADES, upgradeCost, rank, buyUpgrade } from './meta.js';
+import { iconURL } from './icons.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const ARENA_RADIUS = 90;
@@ -45,6 +48,12 @@ const roleChance = { bomber: (w) => (w >= 3 ? Math.min(0.3, 0.12 + w * 0.01) : 0
   splitter: (w) => (w >= 6 ? Math.min(0.2, 0.06 + w * 0.008) : 0) };
 const eliteChance = (w) => (w >= 5 ? Math.min(0.05, 0.012 + w * 0.0015) : 0);
 const HORDE_EVENTS = ['encircle', 'swarm', 'stampede', 'escort'];
+// Banner subtitles: first appearances teach the new threat; other waves get flavour.
+const WAVE_INTRO = { 1: 'Survive the night. Aim true.', 2: 'They smell your blood', 3: 'Bombers and elemental casters join the hunt',
+  5: 'Elite champions carry treasure', 6: 'Splitters burst in two when slain', 7: 'Chargers flash red, then lunge. Dash aside!',
+  9: 'Brutes lead the charge', 24: 'The last wave before the Lord' };
+const INTROS = ['The night grows darker', 'More of them claw out of the earth', 'Hold your ground', 'The horde thickens', 'No rest for the hunter'];
+const pickIntro = (w) => INTROS[w % INTROS.length];
 const _q = new THREE.Quaternion();
 const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3(), _head = new THREE.Vector3(), _tmp = new THREE.Vector3();
 const _col = { x: 0, z: 0 };
@@ -56,13 +65,14 @@ const _lastMove = new THREE.Vector3(0, 0, -1);
 // Final desktop grade: saturation/contrast, level tint, vignette, a red chromatic pulse when hurt, faint grain.
 const GradeShader = {
   uniforms: { tDiffuse: { value: null }, uSaturation: { value: 1.12 }, uTint: { value: new THREE.Color(1, 1, 1) },
-    uHurt: { value: 0 }, uTime: { value: 0 } },
+    uHurt: { value: 0 }, uTime: { value: 0 }, uExposure: { value: 1 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float uSaturation, uHurt, uTime; uniform vec3 uTint; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uSaturation, uHurt, uTime, uExposure; uniform vec3 uTint; varying vec2 vUv;
     void main() {
       vec2 c = vUv - 0.5;
       float ab = 0.0025 + uHurt * 0.012;
       vec3 col = vec3(texture2D(tDiffuse, vUv + c * ab).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - c * ab).b);
+      col *= uExposure;
       float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
       col = mix(vec3(l), col, uSaturation);
       col = (col - 0.5) * 1.06 + 0.5;
@@ -95,6 +105,8 @@ export class Game {
 
     this.world = new World(this.scene, levelById(settings.level));
     this.glow = new GlowLayer(this.scene);
+    this.ribbons = new Ribbons(this.scene);
+    this.decals = new Decals(this.scene, 320);
     this.numbers = new DamageNumbers(this.scene);
     this.bossFx = new BossFx(this.scene);
     this.chests = new Chests(this.scene);
@@ -106,6 +118,11 @@ export class Game {
       new THREE.MeshBasicMaterial({ color: 0xff4d6d, transparent: true, opacity: 0.85, depthWrite: false }));
     this.reticle.visible = false; this.reticle.renderOrder = 7;
     this.scene.add(this.reticle);
+    // top-down: a soft ring at the hunter's feet so the player is always easy to find in the horde
+    this.marker = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.66, 40).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x9fe8ff, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }));
+    this.marker.visible = false; this.marker.renderOrder = 7;
+    this.scene.add(this.marker);
     this.frameAvg = 16; this.slowFrames = 0;
     this.crosshair = document.getElementById('crosshair');
     this.playerLight = new THREE.PointLight(0xffc38a, this.world.level.playerLight, 11, 2);
@@ -114,14 +131,19 @@ export class Game {
     this.input = new Input(this.renderer, this.rig, this.renderer.domElement);
     this.player = new Player();
     this.enemies = new EnemyManager(this.scene);
+    this.enemies.probe = (x, z, out) => this.world.probe(x, z, out); // creatures pick up the baked lighting
     this.enemies.loadModels(BOSSES, (r) => {
       // surfaced on the HUD so model problems are visible inside the headset, where there is no console
       this.modelStatus = r.failed.length ? `Models: ${r.ok.length} ok, failed: ${r.failed.join(' | ')}` : `Models loaded (${r.ok.length})`;
     });
     this.gems = new Gems(this.scene);
+    this.pickups = new Pickups(this.scene);
     this.particles = new Particles(this.scene);
     this.hud = new Hud(this.camera);
+    this.hud.game = this;
+    this.banner = new Banner(this.camera);
     this.scene.add(this.hud.anchor);
+    this.stopT = 0; this.slowT = 0; this.slowScale = 1; // hit-stop / slow motion (game time only; head tracking never pauses)
     this.minimap = new Minimap(this.camera);
     this.menu = new Menu(this.scene, this.camera, this.input);
     this.sfx = new Sfx();
@@ -184,7 +206,7 @@ export class Game {
       const locked = document.pointerLockElement === this.renderer.domElement;
       if (!locked && this.state === 'playing' && !this.renderer.xr.isPresenting && !this.input.usingPad) {
         this.state = 'paused';
-        this.showOverlay('PAUSED', 'Click Resume to get back into the fight.', 'Resume');
+        this.showOverlay('PAUSED', `Click Resume to get back into the fight.${this.buildHTML()}`, 'Resume');
       } else if (locked && this.state === 'paused') {
         this.state = 'playing';
         this.overlay.classList.add('hidden');
@@ -237,33 +259,50 @@ export class Game {
     const level = levelById(settings.level);
     this.menu.show('', 'Point at a card and pull the trigger (or pinch)', [
       { kind: 'weapon', title: 'Start', sub: 'Play', desc: level.id === 'castle' ? 'Clear four rooms, claim treasure, and slay the Vampire Lord.' : 'Survive 25 waves. Aim the revolver; magic fires automatically.', apply: () => this.start() },
-      { kind: 'bonus', title: `Level: ${level.name}`, sub: 'Select', desc: level.desc, apply: () => { this.cycleLevel(); this.applyLevelLook(); this.showVrMenu(); } },
-      { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
+      { kind: 'bonus', icon: 'home', title: `Level: ${level.name}`, sub: 'Battlefield', desc: level.desc, apply: () => { this.cycleLevel(); this.applyLevelLook(); this.showVrMenu(); } },
+      { kind: 'shop', icon: 'gold', title: 'The Crypt', sub: `◆ ${meta.gold} gold`, desc: 'Spend gold on permanent upgrades, including a second life.', apply: () => this.showCryptVR(0) },
+      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
     ], (item) => item.apply(), true, { logo: true, art: true });
+  }
+
+  // In-headset Crypt: pages of upgrade cards; selecting one buys a rank.
+  showCryptVR(page = 0) {
+    const per = 8, pages = Math.ceil(UPGRADES.length / per);
+    const items = UPGRADES.slice(page * per, page * per + per).map((u) => {
+      const r = rank(u.id), max = r >= u.max, c = upgradeCost(u, r);
+      return { kind: 'shop', icon: u.icon, title: u.title, sub: max ? 'MAXED' : `◆ ${c} gold`, level: Math.min(u.max, r + 1), max: u.max, desc: u.desc,
+        hint: max ? 'Fully upgraded' : meta.gold >= c ? 'Select to buy' : 'Not enough gold',
+        apply: () => { if (buyUpgrade(u.id)) { saveMeta(); this.sfx.buy(); } else this.sfx.deny(); this.showCryptVR(page); } };
+    });
+    if (pages > 1) items.push({ kind: 'bonus', icon: 'star', title: 'More', sub: `Page ${page + 1} / ${pages}`, desc: 'Next page of upgrades.', apply: () => this.showCryptVR((page + 1) % pages) });
+    items.push({ kind: 'stats', icon: 'skull', title: 'Back', sub: 'Main menu', desc: '', apply: () => this.showVrMenu() });
+    this.menu.show('THE CRYPT', `◆ ${meta.gold} gold · permanent upgrades`, items, (item) => item.apply(), true);
   }
 
   showPauseMenu() {
     this.menu.show('PAUSED', 'Press X / Y / A / B again to resume', [
-      { kind: 'weapon', title: 'Resume', sub: '', desc: 'Back into the fight.', apply: () => this.resume() },
-      { kind: 'passive', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showPauseMenu()) },
-      { kind: 'bonus', title: 'Restart', sub: '', desc: 'Abandon this run and start over.', apply: () => this.start() },
+      { kind: 'weapon', icon: 'gun', title: 'Resume', sub: '', desc: 'Back into the fight.', apply: () => this.resume() },
+      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showPauseMenu()) },
+      { kind: 'bonus', icon: 'retry', title: 'Restart', sub: '', desc: 'Abandon this run and start over.', apply: () => this.start() },
     ], (item) => item.apply(), true);
   }
 
   showSettings(back) {
     const toggle = (key, values) => { settings[key] = values[(values.indexOf(settings[key]) + 1) % values.length]; saveSettings(); this.showSettings(back); };
     this.menu.show('SETTINGS', 'Select a card to change it', [
-      { kind: 'passive', title: settings.turn === 'snap' ? 'Turn: Snap 45°' : 'Turn: Smooth', sub: 'Turning',
+      { kind: 'passive', icon: 'swift', title: settings.turn === 'snap' ? 'Turn: Snap 45°' : 'Turn: Smooth', sub: 'Turning',
         desc: settings.turn === 'snap' ? 'Right stick jumps in 45° steps. Most comfortable.' : 'Right stick turns continuously. Can cause nausea.',
         apply: () => toggle('turn', ['smooth', 'snap']) },
-      { kind: 'passive', title: `Vignette: ${settings.vignette ? 'On' : 'Off'}`, sub: 'Comfort',
+      { kind: 'passive', icon: 'reach', title: `Vignette: ${settings.vignette ? 'On' : 'Off'}`, sub: 'Comfort',
         desc: 'Darkens the edges of your view while moving or turning.', apply: () => toggle('vignette', [true, false]) },
-      { kind: 'passive', title: settings.hud === 'wrist' ? 'HUD: Wrist' : 'HUD: Fixed', sub: 'Display',
+      { kind: 'passive', icon: 'armor', title: settings.hud === 'wrist' ? 'HUD: Wrist' : 'HUD: Fixed', sub: 'Display',
         desc: settings.hud === 'wrist' ? 'Stats float above your off-hand. Boss HP and alerts stay in view.' : 'Stats are locked to the bottom of your view.',
         apply: () => toggle('hud', ['wrist', 'camera']) },
-      { kind: 'passive', title: `Music: ${settings.music ? 'On' : 'Off'}`, sub: 'Audio',
+      { kind: 'passive', icon: 'star', title: `Music: ${settings.music ? 'On' : 'Off'}`, sub: 'Audio',
         desc: 'Procedural soundtrack that intensifies with the fight.', apply: () => { toggle('music', [true, false]); this.music.setEnabled(settings.music); } },
-      { kind: 'weapon', title: 'Back', sub: '', desc: 'Return.', apply: back },
+      { kind: 'passive', icon: 'might', title: `Numbers: ${settings.numbers !== false ? 'On' : 'Off'}`, sub: 'Display',
+        desc: 'Floating damage numbers over enemies.', apply: () => toggle('numbers', [true, false]) },
+      { kind: 'weapon', icon: 'home', title: 'Back', sub: '', desc: 'Return.', apply: back },
     ], (item) => item.apply(), true);
   }
 
@@ -282,6 +321,15 @@ export class Game {
   toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen?.();
     else this.enterFullscreen();
+  }
+
+  // Pause screen summary: weapon / passive slots with levels, plus time, kills and run gold.
+  buildHTML() {
+    const slot = (icon, label, evo) => `<div class="ov-slot${evo ? ' evo' : ''}"><img src="${iconURL(icon, 96)}" alt=""><b>${label}</b></div>`;
+    const ws = this.weapons.map((w) => slot(w.constructor.id, w.evolved ? '★' : w.level, w.evolved)).join('');
+    const ps = Object.entries(this.player.passives).map(([id, l]) => slot(id, l)).join('');
+    return `<div class="ov-build"><div class="ov-row">${ws}</div>${ps ? `<div class="ov-row">${ps}</div>` : ''}
+      <div class="ov-stats">${fmtTime(this.time)} · Lv ${this.player.level} · ${this.player.kills} kills · <b>◆ ${Math.floor(this.runGold || 0)}</b> gold</div></div>`;
   }
 
   showOverlay(title, msg, btn) {
@@ -321,7 +369,7 @@ export class Game {
     if (this.title.visible && !this.renderer.xr.isPresenting) { this.title.key(code); return; }
     if (code === 'KeyF' && !this.renderer.xr.isPresenting) { this.toggleFullscreen(); return; }
     if (code === 'ShiftLeft' || code === 'ShiftRight' || (code === 'Space' && this.topdown && this.state === 'playing')) { this.tryDash(); return; }
-    if (code === 'Escape' && this.topdown && this.state === 'playing') { this.state = 'paused'; this.showOverlay('PAUSED', 'Press Esc, Start or click Resume.', 'Resume'); return; }
+    if (code === 'Escape' && this.topdown && this.state === 'playing') { this.state = 'paused'; this.showOverlay('PAUSED', `Press Esc, Start or click Resume.${this.buildHTML()}`, 'Resume'); return; }
     if (code === 'Escape' && this.topdown && this.state === 'paused') { this.resume(); return; }
     if (!this.menu.open) return;
     const m = /^(?:Digit|Numpad)([1-9])$/.exec(code);
@@ -336,12 +384,17 @@ export class Game {
     this.music.start();
     this.applyLevelLook();
     this.player.reset();
+    applyMeta(this.player); // permanent Crypt upgrades
+    this.runGold = 0; this.runOver = false;
     this.siege = this.world.level.id === 'castle' ? new CastleSiege(this) : null;
     this.world.ambient?.reset?.();
     this.enemies.reset();
     this.gems.reset();
+    this.pickups.reset();
     this.bossFx.reset();
     this.chests.reset();
+    this.decals.clear(); this.numbers.clear(); this.banner.hide();
+    this.stopT = 0; this.slowT = 0; this.frostBonus = false;
     for (const w of this.weapons) w.dispose();
     this.weapons = [];
     this.addWeapon(Gun);
@@ -373,7 +426,10 @@ export class Game {
 
   openLevelUp() {
     this.state = 'levelup';
+    this.banner.hide(); // never cover the cards
     this.sfx.levelup();
+    this.hud.glow(0xffd166, 0.35);
+    this.input.pulse(0.5, 120);
     const p = this.player.pos;
     this.particles.burst(p.x, 0.3, p.z, 0xffd166, 50, 5);
     this.particles.burst(p.x, 1.4, p.z, 0x9fd8ff, 24, 3);
@@ -386,26 +442,41 @@ export class Game {
 
   // Run summary card: time, wave, level, kills and damage dealt per weapon.
   statsCard() {
-    const p = this.player, names = { ...Object.fromEntries(WEAPONS.map((W) => [W.id, W.title])), bomber: 'Bomber blasts' };
+    const p = this.player, names = { ...Object.fromEntries(WEAPONS.map((W) => [W.id, W.title])), bomber: 'Bomber blasts', relic: 'Holy Bomb', revival: 'Revival blast' };
     const fmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v));
     const rows = Object.entries(this.stats.damage).sort((a, b) => b[1] - a[1]).slice(0, 5)
       .map(([id, v]) => `${names[id] || id}: ${fmt(v)}${this.weapons.find((w) => w.constructor.id === id)?.evolved ? ' ★' : ''}`);
     const where = this.siege ? `Room ${this.siege.index + 1}/4` : `Wave ${this.wave}/${WAVES}`;
-    return { kind: 'stats', title: 'Run Stats', sub: where, disabled: true,
-      desc: `${fmtTime(this.time)} · Lv ${p.level} · ${p.kills} kills\n${rows.join('\n')}` };
+    const gold = this.lastReward ? `\n+${this.lastReward} gold · ${meta.gold} banked` : '';
+    return { kind: 'stats', icon: 'skull', title: 'Run Stats', sub: where, disabled: true,
+      desc: `${fmtTime(this.time)} · Lv ${p.level} · ${p.kills} kills\n${rows.join('\n')}${gold}` };
+  }
+
+  // Banks gold and records for the run that just ended; returns the "new record" note for the end screen.
+  finishRun(won) {
+    if (this.runOver) return '';
+    this.runOver = true;
+    const rooms = this.siege ? this.siege.index + (this.siege.cleared || won ? 1 : 0) : 0;
+    const reward = runReward({ picked: this.runGold, wave: this.siege ? 0 : this.wave, rooms, won });
+    this.lastReward = reward;
+    const beaten = recordRun(this.world.level.id, { time: Math.round(this.time), wave: this.siege ? rooms : this.wave, kills: this.player.kills, level: this.player.level, won, gold: reward }, meta);
+    saveMeta();
+    const names = { time: 'longest survival', wave: this.siege ? 'deepest chamber' : 'furthest wave', kills: 'most kills', level: 'highest level' };
+    return beaten.length ? `NEW RECORD: ${beaten.map((k) => names[k]).join(', ')}!` : '';
   }
 
   endMenu(title, sub, againTitle, againDesc) {
     this.state = 'gameover';
+    this.banner.hide();
     this.menu.show(title, sub, [
-      { kind: 'bonus', title: againTitle, sub: '', desc: againDesc, apply: () => this.start() },
+      { kind: 'bonus', icon: 'retry', title: againTitle, sub: '', desc: againDesc, apply: () => this.start() },
       this.statsCard(),
-      { kind: 'passive', title: 'Main Menu', sub: '', desc: 'Change level or settings.', apply: () => this.toMainMenu() },
+      { kind: 'passive', icon: 'home', title: 'Main Menu', sub: '', desc: 'Visit the Crypt, change battlefield or settings.', apply: () => this.toMainMenu() },
     ], (item) => item.apply(), this.renderer.xr.isPresenting);
   }
 
   toMainMenu() {
-    this.enemies.reset(); this.gems.reset(); this.chests.reset(); this.bossFx.reset();
+    this.enemies.reset(); this.gems.reset(); this.chests.reset(); this.bossFx.reset(); this.pickups.reset(); this.banner.hide();
     this.boss = null; this.music.intensity = 0.15;
     if (this.renderer.xr.isPresenting) this.showVrMenu();
     else { this.state = 'menu'; if (document.pointerLockElement) document.exitPointerLock(); this.title.show(); }
@@ -413,22 +484,101 @@ export class Game {
 
   gameOver() {
     this.sfx.die();
-    const p = this.player;
-    this.endMenu('YOU DIED', `Survived ${fmtTime(this.time)}  ·  Level ${p.level}  ·  ${p.kills} kills`, 'Try Again', 'The night is long. Go again.');
+    const p = this.player, rec = this.finishRun(false);
+    this.endMenu('YOU DIED', rec || `Survived ${fmtTime(this.time)}  ·  Level ${p.level}  ·  ${p.kills} kills  ·  +${this.lastReward} gold`, 'Try Again', 'The night is long. Spend your gold in the Crypt, then go again.');
   }
 
   victory() {
-    this.sfx.levelup();
-    this.endMenu('VICTORY!', `The Vampire Lord is dust.  ${fmtTime(this.time)}  ·  ${this.player.kills} kills`, 'Play Again', 'Dawn breaks. Until next night.');
+    this.sfx.victory();
+    const rec = this.finishRun(true);
+    this.hud.glow(0xffd166, 0.8);
+    this.endMenu('VICTORY!', rec || `The Vampire Lord is dust.  ${fmtTime(this.time)}  ·  ${this.player.kills} kills  ·  +${this.lastReward} gold`, 'Play Again', 'Dawn breaks. Until next night.');
+  }
+
+  addGold(v) {
+    this.runGold += v * this.player.stats.greed;
+    this.sfx.coin();
+  }
+
+  // Loot table for a kill: bosses and elites always pay out; the horde occasionally drops gold and relics.
+  dropLoot(e) {
+    const P = this.pickups;
+    if (e.t.boss) { P.spawn('bag', e.x + 1.2, e.z, 30); P.spawn(pick(RELICS), e.x - 1.2, e.z); return; }
+    if (e.elite) { P.spawn('bag', e.x - 0.8, e.z, 10); P.spawn(pick(['vacuum', 'bomb', 'freeze']), e.x + 0.8, e.z); return; }
+    const td = this.topdown ? 0.3 : 1, r = Math.random() / td; // top-down kills 4x as many, so each drops less
+    if (r < 0.003) P.spawn('vacuum', e.x, e.z);
+    else if (r < 0.0045) P.spawn('bomb', e.x, e.z);
+    else if (r < 0.006) P.spawn('freeze', e.x, e.z);
+    else if (r < 0.0075) P.spawn('chicken', e.x, e.z);
+    if (Math.random() < 0.04 * td) P.spawn('coin', e.x + rand(-0.3, 0.3), e.z + rand(-0.3, 0.3), e.type === 'brute' ? 3 : 1);
+  }
+
+  collectPickup(k) {
+    const p = this.player, P = p.pos;
+    if (k.kind === 'coin' || k.kind === 'bag') {
+      this.addGold(k.v);
+      if (k.kind === 'bag') this.numbers.spawn(P.x, this.topdown ? 2.4 : 1.3, P.z, Math.round(k.v * p.stats.greed), '#ffd34d', { prefix: '+', scale: 1.3 });
+      return;
+    }
+    const name = PICKUPS[k.kind].relic, color = PICKUPS[k.kind].color;
+    this.hud.toast(name, 2);
+    this.input.pulse(0.6, 120);
+    if (k.kind === 'vacuum') { this.gems.vacuum(); for (const c of this.pickups.list) if (PICKUPS[c.kind].magnet) c.pull = true; this.sfx.vacuum(); this.hud.glow(color, 0.4); }
+    else if (k.kind === 'chicken') { const h = Math.round(p.maxHp * 0.3); p.heal(h); this.numbers.spawn(P.x, this.topdown ? 2.4 : 1.2, P.z, h, '#7dff9a', { prefix: '+', scale: 1.3 }); this.sfx.heal(); }
+    else if (k.kind === 'freeze') {
+      for (const e of this.enemies.list) e.frozenUntil = this.time + (e.t.boss ? 2.5 : 5);
+      this.sfx.freeze(); this.hud.glow(color, 0.55); this.pickups.shock(P.x, P.z, color, 20, 0.8);
+    } else if (k.kind === 'bomb') this.holyBomb();
+  }
+
+  // Holy Bomb relic: the horde within 22 m is smitten (elites lose half their health, bosses 6%).
+  holyBomb() {
+    const P = this.player.pos, R = 22;
+    this.enemies.forEachNear(P.x, P.z, R, (e) => {
+      if (Math.hypot(e.x - P.x, e.z - P.z) > R) return;
+      this.hitEnemy(e, e.t.boss ? e.maxHp * 0.06 : e.elite ? e.maxHp * 0.5 : e.hp + 1, { quiet: true, src: 'relic' });
+    });
+    this.pickups.shock(P.x, P.z, 0xfff0a0, R, 0.7);
+    this.particles.burst(P.x, 1, P.z, 0xfff6c9, 80, 9);
+    this.hud.glow(0xfff6dc, 0.9);
+    this.freeze(0.12); this.addShake(0.7);
+    this.sfx.holyBomb();
+  }
+
+  // Second Chance: rise at half health, clear enemy shots and blast the horde back.
+  revive() {
+    const p = this.player, P = p.pos;
+    p.revives--; p.hp = p.maxHp * 0.5;
+    this.invulnUntil = this.time + 3;
+    this.bossFx.reset();
+    this.enemies.forEachNear(P.x, P.z, 9, (e) => {
+      if (Math.hypot(e.x - P.x, e.z - P.z) > 9) return;
+      this.hitEnemy(e, e.t.boss ? e.maxHp * 0.05 : 250 * this.hpMul, { quiet: true, src: 'revival' });
+      this.enemies.knockback(e, P.x, P.z, 14);
+    });
+    this.pickups.shock(P.x, P.z, 0xffd166, 9, 0.7);
+    this.particles.burst(P.x, 1, P.z, 0xffd166, 90, 7);
+    this.banner.show('SECOND CHANCE', 'The night is not over yet', { kicker: 'Revived', color: '#ffd166', seconds: 2.6 });
+    this.hud.glow(0xffd166, 0.8);
+    this.slowMo(1.2, 0.3);
+    this.sfx.revive();
+    this.input.pulse(1, 300);
   }
 
   onEvolve(w, E) {
     const p = this.player.pos;
     this.sfx.evolve();
-    this.hud.toast(`EVOLVED: ${E.title}!`, 3.5);
+    this.banner.show(E.title.toUpperCase(), E.desc, { kicker: 'Weapon evolved', color: '#c77dff', seconds: 3.2 });
     this.particles.burst(p.x, 1, p.z, 0xc77dff, 80, 6);
+    this.hud.glow(0xc77dff, 0.6);
+    this.freeze(0.15);
     this.addShake(0.3);
   }
+
+  // Hit-stop: game time stops for a few frames (player movement and head tracking keep going).
+  freeze(sec) { this.stopT = Math.max(this.stopT, sec); }
+  // Slow motion that eases back to full speed over its last 0.4 s.
+  slowMo(sec, scale = 0.3) { this.slowT = Math.max(this.slowT, sec); this.slowScale = scale; }
 
   // Dash: a short burst in the move direction (or forward) with invulnerability frames.
   tryDash() {
@@ -443,12 +593,13 @@ export class Game {
     this.particles.burst(p.x, 0.4, p.z, 0x9fd8ff, 18, 3);
   }
 
-  addShake(v) { this.shake = Math.min(1, this.shake + v); }
+  addShake(v) { if (settings.shake !== false) this.shake = Math.min(1, this.shake + v); }
 
   damagePlayer(amount, effect = null) {
     if (this.time < this.invulnUntil) return;
     this.player.hurt(amount);
     this.addShake(0.35);
+    if (amount >= 12) this.freeze(0.05);
     this.hud.hurt();
     this.sfx.hurt();
     this.input.rumble(0.8, 0.5, 150);
@@ -459,24 +610,35 @@ export class Game {
     const a = rand(0, Math.PI * 2), p = this.player.pos;
     this.boss = this.enemies.spawnBoss(def, p.x + Math.cos(a) * 14, p.z + Math.sin(a) * 14, 1 + (this.wave - 1) * 0.03);
     this.particles.burst(this.boss.x, def.y, this.boss.z, def.color, 60, 6);
-    this.hud.toast(`⚠ ${def.name.toUpperCase()} ⚠`, 4);
-    this.sfx.roar();
+    this.bossIntro(def);
+  }
+
+  bossIntro(def) {
+    this.banner.show(def.name.toUpperCase(), def.title || '', { kicker: this.siege ? 'Guardian' : `Wave ${this.wave} — boss`, color: '#ff3d64', seconds: 3.4 });
+    this.hud.glow(0xff2a4a, 0.5);
+    this.sfx.roar(this.boss?.x, this.boss?.z);
+    this.sfx.bossHorn();
   }
 
   // Central damage entry point so every weapon gets the same feedback (flash, numbers, sfx, gems, particles).
   hitEnemy(e, dmg, opts = {}) {
     if (e.dead) return;
+    if (this.frostBonus && e.frozenUntil > this.time) dmg *= 1.5; // Absolute Zero: frozen foes shatter
     if (opts.src) this.stats.damage[opts.src] = (this.stats.damage[opts.src] || 0) + Math.min(dmg, Math.max(0, e.hp));
     const died = this.enemies.damage(e, dmg);
     if (!opts.quiet) this.sfx.hit();
-    this.numbers.spawn(e.x, e.t.y * (e.scale ?? 1) + 0.4, e.z, Math.round(dmg), opts.precision ? '#5ffff0' : died ? '#ffd166' : '#ffffff');
+    this.numbers.spawn(e.x, e.t.y * (e.scale ?? 1) + 0.4, e.z, Math.round(dmg), opts.precision ? '#5ffff0' : died ? '#ffd166' : '#ffffff',
+      { scale: opts.quiet ? 0.75 : opts.precision ? 1.25 : 1, life: opts.quiet ? 0.55 : 0.8 });
     if (died) {
       this.player.kills++;
       this.gems.spawn(e.x, e.z, (e.xp ?? e.t.xp) * (this.topdown ? TOPDOWN.xp : 1)); // 4x the monsters, so less XP each
       if (e.t.boss) { for (let i = 0; i < 3; i++) this.gems.spawnHeal(e.x + rand(-1.5, 1.5), e.z + rand(-1.5, 1.5)); }
       else if (Math.random() < 0.05) this.gems.spawnHeal(e.x, e.z);
       this.particles.burst(e.x, e.t.y * (e.scale ?? 1), e.z, e.t.color, e.t.boss ? 120 : 16, e.t.boss ? 8 : 4);
+      if (e.kind === 'fire') this.decals.add(e.x, e.z, e.size * 0.9, 0xff6a1a, DECAL.SCORCH, 12);
+      else this.decals.add(e.x, e.z, e.size * (e.t.boss ? 1.5 : 0.75), e.kind === 'ice' ? 0x8fdcf0 : e.t.blood ?? 0x5a1030, DECAL.SPLAT, e.t.boss ? 45 : 16);
       this.sfx.kill();
+      this.dropLoot(e);
       if (e.role === 'bomber') this.explode(e, false); // shot bombers blow up their friends, not you
       if (e.role === 'splitter' && !e.noSplit) {
         const dx = e.x - this.player.pos.x, dz = e.z - this.player.pos.z, d = Math.hypot(dx, dz) || 1;
@@ -488,6 +650,7 @@ export class Game {
         this.particles.burst(e.x, 0.8, e.z, 0x9dff70, 14, 3);
       }
       if (e.elite) {
+        this.freeze(0.07);
         this.chests.spawn(e.x, e.z);
         this.gems.spawnHeal(e.x + 0.8, e.z);
         this.particles.burst(e.x, 1.2, e.z, 0xffd166, 50, 5);
@@ -495,7 +658,11 @@ export class Game {
       }
       if (e.t.boss) {
         this.boss = null;
-        this.hud.toast(`${e.t.name} slain!`, 3);
+        this.slowMo(1.8, 0.25);
+        this.addShake(0.8);
+        this.hud.glow(0xffd166, 0.7);
+        this.decals.add(e.x, e.z, e.size * 1.6, 0x1a0a14, DECAL.CRACK, 45);
+        if (!e.t.final) this.banner.show(`${e.t.name.toUpperCase()} SLAIN`, 'Treasure and healing spill out', { kicker: 'Boss defeated', color: '#ffd166', seconds: 3 });
         if (e.t.final) this.victory();
       }
     }
@@ -507,7 +674,13 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const xr = this.renderer.xr.isPresenting;
     fxTime.value += dt;
+    // game-time scale: hit-stop freezes, slow motion eases back in over its last 0.4 s
+    let gs = 1;
+    if (this.stopT > 0) { this.stopT -= dt; gs = 0; }
+    else if (this.slowT > 0) { this.slowT -= dt; gs = this.slowT > 0.4 ? this.slowScale : 1 + (this.slowScale - 1) * (this.slowT / 0.4); }
+    const gdt = dt * gs;
     this.glow.begin();
+    this.ribbons.begin(this.headPos());
     if (xr && this.input.getMenuPress()) {
       if (this.state === 'playing') { this.state = 'paused'; this.showPauseMenu(); }
       else if (this.state === 'paused') this.resume();
@@ -522,7 +695,7 @@ export class Game {
         this.input.consumePadNav();
       } else if (start && this.state === 'playing') {
         this.state = 'paused';
-        this.showOverlay('PAUSED', 'Press Start or A to resume.', 'Resume');
+        this.showOverlay('PAUSED', `Press Start or A to resume.${this.buildHTML()}`, 'Resume');
         if (document.pointerLockElement) document.exitPointerLock();
       } else if ((start || face === 0) && this.state === 'paused') this.resume();
       else if (face === 0 && this.state === 'gameover') this.menu.pick(0);
@@ -533,15 +706,21 @@ export class Game {
     const target = this.state === 'menu' ? 0.15 : this.state === 'playing' || this.state === 'levelup'
       ? Math.min(1, 0.4 + this.enemies.alive / 260 + (this.boss ? 0.45 : 0)) : 0.3;
     this.music.intensity += (target - this.music.intensity) * Math.min(1, dt * 0.8);
+    this.music.boss = !!this.boss && this.state === 'playing';
+    // spatial audio listener: the head (first-person / VR) or the hunter with screen-up as forward (top-down)
+    const lh = this.bodyPos();
+    if (this.topdown) this.sfx.setListener(lh.x, lh.z, 0);
+    else { this.camera.getWorldDirection(_tmp); this.sfx.setListener(lh.x, lh.z, Math.atan2(-_tmp.x, -_tmp.z)); }
     this.hud.dash = this.state === 'playing' ? Math.min(1, 1 - (this.dashReady - this.time) / DASH.cooldown) : 1;
     this.updateMovement(dt, xr);
     if (this.topdown && this.state !== 'menu') this.updateAim(dt);
-    if (this.state === 'playing') this.tick(dt);
+    if (this.state === 'playing') this.tick(gdt);
     else if (this.menu.open) this.menu.update(xr);
     if (xr) { this.hud.setMode(settings.hud); this.updateWristAnchor(); }
-    for (const w of this.weapons) w.draw(dt);
+    for (const w of this.weapons) w.draw(gdt);
     this.gems.draw(fxTime.value, this.glow);
     this.chests.draw(fxTime.value, this.glow);
+    this.pickups.draw(gdt, fxTime.value, this.glow);
     for (const e of this.enemies.list) {
       if (e.kind !== 'normal') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.9 * e.scale, _kindColor.set(KINDS[e.kind].color), 0.7);
       if (e.elite) { // champion: rotating golden halo at the feet and a crown light overhead
@@ -552,25 +731,46 @@ export class Game {
       }
       if (e.role === 'bomber') this.glow.add(e.x, e.t.y * e.scale, e.z, 0.7 + (e.fuse > 0 ? 0.6 : 0), _kindColor.set(0xff8a2a), e.fuse > 0 ? 1.2 : 0.55);
       if (e.warn > 0.3 && e.role === 'charger') this.glow.add(e.x, e.t.y * e.scale, e.z, 1.4 * e.scale, _kindColor.set(0xff3050), e.warn * 0.8);
+      if (e.frozenUntil > this.time) this.glow.add(e.x, e.t.y * e.scale, e.z, 1.1 * e.scale, _kindColor.set(0x9fe8ff), 0.35);
     }
     this.enemies.outlinesVisible = !xr && this.enemies.outlinesAllowed !== false;
     this.shadows.begin();
     this.enemies.drawShadows(this.shadows);
     for (const c of this.chests.list) this.shadows.add(c.x, c.z, 0.6, 0.5);
+    for (const k of this.pickups.list) if (PICKUPS[k.kind].relic) this.shadows.add(k.x, k.z, 0.4, 0.4);
     if (this.state !== 'menu') this.shadows.add(this.player.pos.x, this.player.pos.z, 0.42, 0.45);
     this.shadows.end();
-    this.particles.update(dt);
-    this.numbers.update(dt);
+    this.particles.update(gdt);
+    this.numbers.scale = this.topdown ? 1.7 : 1;
+    this.numbers.enabled = settings.numbers !== false;
+    this.hud.layout(xr, this.camera.fov);
+    this.numbers.update(gdt);
+    this.decals.update(dt);
+    this.banner.layout(xr, this.camera.fov);
+    this.banner.update(dt);
     const cycle = this.world.level.dayCycle;
-    if (cycle) { this.world.setTimeOfDay(this.state === 'menu' ? 0 : Math.min(1, this.time / cycle.duration)); this.playerLight.intensity = this.world.playerLightNow; }
-    if (this.world.update(dt, fxTime.value, this.player.pos)) this.sfx.thunder();
-    this.playerLight.position.set(this.player.pos.x, 2.2, this.player.pos.z);
+    if (cycle) this.world.setTimeOfDay(this.state === 'menu' ? 0 : Math.min(1, this.time / cycle.duration));
+    // the lantern: a wider, brighter pool from the overhead camera so the fight around the hunter stays readable
+    const lantern = cycle ? this.world.playerLightNow : this.world.level.playerLight;
+    this.playerLight.intensity = lantern * (this.topdown ? 2.6 : 1);
+    this.playerLight.distance = this.topdown ? 17 : 11;
+    if (this.world.update(dt, fxTime.value, this.player.pos, this.headPos())) this.sfx.thunder();
+    this.playerLight.position.set(this.player.pos.x, this.topdown ? 3.4 : 2.2, this.player.pos.z);
     const inMenu = this.state === 'menu';
     this.hud.mesh.visible = !inMenu;
     this.minimap.mesh.visible = !inMenu;
     this.hud.update(dt, this.player, this.time, this.boss, this.waveInfo());
+    if (this.state === 'playing' && this.hud.lowHealth > 0) { // heartbeat below 30% HP, faster as it drops
+      this.heartT = (this.heartT ?? 0) - dt;
+      if (this.heartT <= 0) { this.heartT = 1.05 - this.hud.lowHealth * 0.35; this.sfx.heartbeat(); this.input.pulse(0.2, 40); }
+    }
     this.minimap.update(dt, this);
     this.crosshair?.classList.toggle('hidden', xr || this.topdown || this.state === 'menu' || this.state === 'paused');
+    this.marker.visible = this.topdown && this.state !== 'menu';
+    if (this.marker.visible) {
+      this.marker.position.set(this.player.pos.x, 0.05, this.player.pos.z);
+      this.marker.material.opacity = 0.35 + 0.15 * Math.sin(fxTime.value * 4) + (this.time < this.invulnUntil ? 0.4 : 0);
+    }
     if (this.topdown) {
       this.avatar.root.visible = this.state !== 'menu';
       this.avatar.update(dt, this.player.pos, this.aimDir, this.state === 'playing' ? Math.min(1, this.moving ?? 0) : 0, this.dashT > 0);
@@ -579,6 +779,7 @@ export class Game {
     } else this.enemies.view = null;
     this.enemies.cap = this.enemyCap();
     this.glow.end();
+    this.ribbons.end();
     if (xr) this.renderer.render(this.scene, this.camera);
     else if (this.title.visible) { /* the title art covers the canvas: save the GPU */ }
     else {
@@ -588,6 +789,7 @@ export class Game {
       const [by, bz] = this.topdown ? [TOPDOWN.height, TOPDOWN.back] : [1.6, 0];
       this.camera.position.set(Math.sin(fxTime.value * 53) * k, by + Math.sin(fxTime.value * 47 + 1) * k, bz);
       this.grade.uniforms.uHurt.value = this.hud.flash;
+      this.grade.uniforms.uExposure.value = this.topdown && this.world.level.playerLight > 0 ? 1.18 : 1;
       this.grade.uniforms.uTime.value = fxTime.value;
       this.composer.render();
     }
@@ -674,6 +876,8 @@ export class Game {
         this.rig.position.addScaledVector(this.dashDir, DASH.speed * dt);
         moving = 1;
         this.glow.add(this.player.pos.x, 0.8, this.player.pos.z, 1.2, _kindColor.set(0x9fd8ff), 0.5);
+        const px = this.player.pos.x, pz = this.player.pos.z;
+        this.ribbons.line(px - this.dashDir.x * 2.2, 0.9, pz - this.dashDir.z * 2.2, px, 0.9, pz, 0.7, _kindColor, 0.35);
       }
       const h = this.bodyPos(), d = Math.hypot(h.x, h.z);
       if (d > ARENA_RADIUS) {
@@ -724,13 +928,14 @@ export class Game {
     this.time += dt;
     if (this.siege) this.siege.update(dt);
     else this.spawnDirector(dt);
-    if (this.boss) this.boss.t.ai(this.boss, dt, this);
+    if (this.boss && !(this.boss.frozenUntil > this.time)) this.boss.t.ai(this.boss, dt, this);
     if (this.siege) for (const e of this.enemies.list) confine(e, Math.max(0, this.siege.index));
     const contact = this.enemies.update(dt, p.pos, this.time, this.world.colliders, {
       shoot: (e, k) => {
         const dx = p.pos.x - e.x, dz = p.pos.z - e.z, d = Math.hypot(dx, dz) || 1;
         this.bossFx.shoot(e.x, e.z, dx / d * k.speed, dz / d * k.speed, k.dmg * this.hpMul * 0.5, k.color, k.effect);
         this.particles.burst(e.x, e.t.y, e.z, k.color, 6, 2);
+        this.sfx.enemyShot(e.x, e.z);
       },
       explode: (e) => { e.hp = 0; e.dead = true; this.explode(e, true); },
     });
@@ -739,19 +944,23 @@ export class Game {
     this.gems.update(dt, p, (g) => {
       if (g.heal) {
         p.heal(Math.round(p.maxHp * 0.25));
-        this.hud.toast(`+${Math.round(p.maxHp * 0.25)} HP`, 1.2);
+        this.numbers.spawn(p.pos.x, this.topdown ? 2.4 : 1.2, p.pos.z, Math.round(p.maxHp * 0.25), '#7dff9a', { prefix: '+', scale: 1.2 });
         this.particles.burst(p.pos.x, 1.2, p.pos.z, 0xff3b5c, 16, 3);
-      } else this.pendingLevels += p.addXp(g.v);
-      this.sfx.pickup();
+        this.sfx.heal();
+      } else { this.pendingLevels += p.addXp(g.v); this.sfx.pickup(); }
     });
     this.chests.update(dt, p, () => this.openChest());
+    this.pickups.update(dt, p, (k) => this.collectPickup(k));
     p.heal(p.stats.regen * dt);
     this.hurtTimer -= dt;
     if (contact > 0 && this.time >= this.invulnUntil) {
       p.hurt(contact * (this.topdown ? TOPDOWN.dmg : 1));
       if (this.hurtTimer <= 0) { this.hurtTimer = 0.35; this.hud.hurt(); this.sfx.hurt(); this.input.rumble(0.6, 0.4, 120); this.addShake(0.2); }
     }
-    if (p.hp <= 0) { p.hp = 0; this.gameOver(); return; }
+    if (p.hp <= 0) {
+      if (p.revives > 0) this.revive();
+      else { p.hp = 0; this.gameOver(); return; }
+    }
     if (this.state !== 'playing') return; // victory may have ended the run this frame
     if (this.pendingLevels > 0) { this.openLevelUp(); return; }
   }
@@ -762,9 +971,11 @@ export class Game {
     const choices = evo.length ? evo : getChoices(this);
     const item = choices[Math.floor(Math.random() * choices.length)];
     item.apply();
-    this.hud.toast(`Chest: ${item.title} ${item.sub}`.trim(), 3);
+    this.hud.toast(`Chest: ${item.title}${item.level ? ` Lv ${item.level}` : ''}`, 3);
+    this.addGold(Math.round(rand(5, 12)));
     this.particles.burst(this.player.pos.x, 1, this.player.pos.z, 0xffd166, 40, 4);
-    this.sfx.levelup();
+    this.hud.glow(0xffd166, 0.4);
+    this.sfx.chest();
   }
 
   waveInfo() {
@@ -780,7 +991,8 @@ export class Game {
     this.particles.burst(e.x, y, e.z, 0xffa040, 40, 7);
     this.particles.burst(e.x, y, e.z, 0xfff1c0, 16, 4);
     this.glow.add(e.x, y, e.z, 4, _kindColor.set(0xff8a2a), 1.4);
-    this.sfx.noise({ t: 0.5, vol: 0.2, type: 'lowpass', f: 900, fEnd: 60, key: 'boom', gap: 0.06 });
+    this.decals.add(e.x, e.z, R * 0.8, 0xff7a22, DECAL.SCORCH, 14);
+    this.sfx.boom(e.x, e.z);
     if (hurtsPlayer && Math.hypot(p.x - e.x, p.z - e.z) < R) this.damagePlayer(14 * Math.sqrt(this.hpMul));
     const dmg = 45 * this.hpMul;
     this.enemies.forEachNear(e.x, e.z, R + 1, (o) => {
@@ -860,7 +1072,7 @@ export class Game {
     this.hpMul = waveHpMul(w) * (this.topdown ? TOPDOWN.hp : 1); // top-down: more, weaker monsters
     const bossName = BOSS_WAVES[w];
     if (bossName) this.spawnBoss(BOSSES.find((b) => b.name === bossName));
-    this.hud.toast(bossName ? `WAVE ${w} — ${bossName.toUpperCase()}` : `WAVE ${w}`, 3);
+    else this.banner.show(`WAVE ${w}`, WAVE_INTRO[w] || pickIntro(w), { kicker: `${WAVES - w + 1} waves until dawn`, color: '#ffd166', seconds: 2.4 });
     const chests = bossName ? 2 : 1;
     for (let i = 0; i < chests; i++) {
       const a = rand(0, Math.PI * 2), d = rand(10, 22), p = this.player.pos;

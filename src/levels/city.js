@@ -15,6 +15,26 @@ function pavementTexture() {
   });
 }
 
+// Cracked, rain-dark asphalt patches with puddles catching the street light.
+function wetTexture() {
+  return tileTexture(512, 100, (g, S) => {
+    g.fillStyle = '#2a2a31'; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 9; i++) {
+      const x = rand(0, S), y = rand(0, S), rx = rand(25, 60), ry = rx * rand(0.4, 0.8);
+      g.fillStyle = 'rgba(20,24,40,0.85)'; g.beginPath(); g.ellipse(x, y, rx, ry, rand(0, 3), 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(140,160,220,0.18)'; g.beginPath(); g.ellipse(x - rx * 0.2, y - ry * 0.2, rx * 0.5, ry * 0.35, 0, 0, Math.PI * 2); g.fill();
+    }
+    g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = 2;
+    for (let i = 0; i < 26; i++) {
+      let x = rand(0, S), y = rand(0, S);
+      g.beginPath(); g.moveTo(x, y);
+      for (let k = 0; k < 5; k++) { x += rand(-22, 22); y += rand(-22, 22); g.lineTo(x, y); }
+      g.stroke();
+    }
+    for (let i = 0; i < 2500; i++) { g.fillStyle = `rgba(150,150,170,${rand(0.05, 0.15).toFixed(2)})`; g.fillRect(rand(0, S), rand(0, S), 2, 2); }
+  });
+}
+
 function windowTexture() {
   const c = makeCanvas(256, 512), g = c.getContext('2d');
   g.fillStyle = '#1b1c26'; g.fillRect(0, 0, 256, 512);
@@ -60,8 +80,11 @@ export const city = {
   rimLight: { color: 0x8fd8ff, strength: 0.7 },
   weather: { type: 'rain', count: 1800, thunder: true },
   topdownClip: 8,
+  bake: { shadow: 0.5, maxLen: 18 },
+  nebula: { a: 0x8a2a6a, b: 0x243a8a, strength: 0.22 },
   ground: pavementTexture,
-  build(group, col) {
+  groundAlt: wetTexture, groundAltMask: [0.5, 0.64],
+  build(group, col, bake) {
     // roads: a grid of asphalt strips with dashed centre lines
     const asphalt = new THREE.MeshLambertMaterial({ color: 0x232328 });
     const roadGeo = new THREE.PlaneGeometry(300, ROAD_W).rotateX(-Math.PI / 2);
@@ -71,12 +94,14 @@ export const city = {
       const off = k * PITCH;
       const rx = new THREE.Mesh(roadGeo, asphalt); rx.position.set(0, 0.01, off); group.add(rx);
       const rz = new THREE.Mesh(roadGeo, asphalt); rz.position.set(off, 0.01, 0); rz.rotation.y = Math.PI / 2; group.add(rz);
+      rx.userData.bakeGround = rz.userData.bakeGround = true; // roads take baked shadows/light like terrain
       for (let s = -148; s <= 148; s += 6) {
         _d.position.set(s, 0.03, off); _d.rotation.set(0, 0, 0); _d.scale.setScalar(1); _d.updateMatrix(); dashes.setMatrixAt(di++, _d.matrix);
         _d.position.set(off, 0.03, s); _d.rotation.set(0, Math.PI / 2, 0); _d.updateMatrix(); dashes.setMatrixAt(di++, _d.matrix);
       }
     }
     dashes.count = di;
+    dashes.userData.bakeGround = true;
     group.add(dashes);
 
     // buildings fill the blocks between streets; the block around the spawn stays open
@@ -101,6 +126,12 @@ export const city = {
         meshes[vi].setColorAt(counts[vi], tint.setHSL(rand(0.55, 0.7), rand(0.05, 0.25), rand(0.5, 0.9)));
         counts[vi]++;
         col.addBox(x, z, w / 2 + 0.3, d / 2 + 0.3, 0.2);
+        bake.box(x, z, w / 2, d / 2, 0, h, 0.85);
+        if (Math.random() < 0.45) { // neon signage spills colour onto the pavement
+          const side = Math.floor(rand(0, 4)), along = rand(-0.4, 0.4);
+          const nx = side < 2 ? x + (side ? 1 : -1) * (w / 2 + 1.6) : x + along * w, nz = side < 2 ? z + along * d : z + (side === 2 ? 1 : -1) * (d / 2 + 1.6);
+          bake.light(nx, nz, 5.5, pick([0xff3d9a, 0x3dd8ff, 0xb05aff, 0x5affb0]), 0.6);
+        }
       }
     }
     meshes.forEach((m, i) => { m.count = counts[i]; group.add(m); });
@@ -117,6 +148,7 @@ export const city = {
         _d.position.set(x, 4.6, z); _d.updateMatrix(); heads.setMatrixAt(li, _d.matrix);
         glowPos.push(x, 4.5, z);
         col.add({ x, z, r: 0.2 });
+        bake.light(x, z, 7, 0xffa64a, 0.7); // sodium street light
         li++;
       }
     }
@@ -147,10 +179,11 @@ export const city = {
         wheels.setMatrixAt(i * 4 + wI, _d.matrix);
       }
       col.addBox(x, z, axis ? 2.3 : 1.1, axis ? 1.1 : 2.3, 0.15);
+      bake.box(x, z, axis ? 2.2 : 0.95, axis ? 0.95 : 2.2, 0, 1.5, 0.8);
     }
     group.add(bodies, cabins, wheels);
     group.add(scatter(new THREE.InstancedMesh(new THREE.BoxGeometry(1.8, 1.3, 1.0).translate(0, 0.65, 0), new THREE.MeshLambertMaterial({ color: 0x2f5a3a }), 14), 14, 16, 85,
-      (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 1.0));
+      (d) => { d.rotation.set(0, rand(0, 6.28), 0); }, col, () => 1.0, () => 1.3));
     return new Drifters(group, { count: 50, color: 0x9a9aa0, size: 0.08, opacity: 0.35, minY: 0.5, maxY: 4, speed: 0.4 });
   },
 };

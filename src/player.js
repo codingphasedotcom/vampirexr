@@ -14,7 +14,9 @@ export class Player {
     this.magnet = 3;
     this.xp = 0; this.level = 1; this.xpToNext = this.xpNeeded(1);
     this.kills = 0;
-    this.stats = { damage: 1, cooldown: 1, area: 1, regen: 0, armor: 0 };
+    // growth = XP multiplier, greed = gold multiplier (both raised by Crypt upgrades)
+    this.stats = { damage: 1, cooldown: 1, area: 1, regen: 0, armor: 0, growth: 1, greed: 1 };
+    this.revives = 0;
     this.passives = {};
   }
 
@@ -23,7 +25,7 @@ export class Player {
   // Returns how many levels were gained (can be >1 on a big pickup).
   addXp(v) {
     if (this.level >= MAX_LEVEL) { this.xp = 0; return 0; }
-    this.xp += v;
+    this.xp += v * this.stats.growth;
     let gained = 0;
     while (this.xp >= this.xpToNext && this.level < MAX_LEVEL) {
       this.xp -= this.xpToNext;
@@ -34,6 +36,6 @@ export class Player {
     return gained;
   }
 
-  hurt(d) { this.hp -= d * (1 - this.stats.armor); }
+  hurt(d) { this.hp -= d * (1 - Math.min(0.7, this.stats.armor)); }
   heal(v) { this.hp = Math.min(this.maxHp, this.hp + v); }
 }

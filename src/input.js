@@ -127,6 +127,16 @@ export class Input {
   rumble(strong = 0.6, weak = 0.3, ms = 80) {
     const act = this.pad?.vibrationActuator;
     if (act?.playEffect) act.playEffect('dual-rumble', { duration: ms, strongMagnitude: strong, weakMagnitude: weak }).catch(() => {});
+    this.pulse(strong, ms);
+  }
+
+  // XR controller haptics (Quest Touch: gamepad.hapticActuators[0].pulse). `index` limits it to one hand.
+  pulse(intensity, ms, index = -1) {
+    for (let i = 0; i < this.controllers.length; i++) {
+      if (index >= 0 && i !== index) continue;
+      const act = this.controllers[i].source?.gamepad?.hapticActuators?.[0];
+      try { act?.pulse?.(Math.min(1, intensity), ms); } catch { /* not supported */ }
+    }
   }
 
   consumeSqueeze() { const v = !!this.squeezeEdge; this.squeezeEdge = false; return v; }

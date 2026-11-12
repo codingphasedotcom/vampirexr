@@ -10,7 +10,7 @@ const CHORDS = [ // root (Hz) + chord tones, one bar each
 const BASS = [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0];
 
 export class Music {
-  constructor(sfx) { this.sfx = sfx; this.intensity = 0.15; this.enabled = true; this.timer = null; }
+  constructor(sfx) { this.sfx = sfx; this.intensity = 0.15; this.enabled = true; this.timer = null; this.boss = false; }
 
   start() {
     const ctx = this.sfx.ctx;
@@ -77,5 +77,14 @@ export class Music {
       this.voice('square', f, at, stepDur * 0.9, 0.022, { cutoff: 2400 });
     }
     if (I > 0.9 && s % 8 === 0) this.voice('sawtooth', chord.root * 4, at, stepDur * 6, 0.02, { cutoff: 1600, detune: 12, attack: 0.05 });
+    if (this.boss) { // boss layer: war toms on the off-beats and a dissonant minor-second stab on every bar
+      if (s % 4 === 2 || s === 15) {
+        const ctx = this.sfx.ctx, o = ctx.createOscillator(), g = ctx.createGain(), f = s < 8 ? 120 : s === 15 ? 150 : 98;
+        o.frequency.setValueAtTime(f, at); o.frequency.exponentialRampToValueAtTime(f * 0.5, at + 0.18);
+        g.gain.setValueAtTime(0.2, at); g.gain.exponentialRampToValueAtTime(0.0001, at + 0.3);
+        o.connect(g).connect(this.gain); o.start(at); o.stop(at + 0.32);
+      }
+      if (s === 0) for (const k of [1, 1.0595]) this.voice('sawtooth', chord.root * 2 * k, at, stepDur * 3, 0.03, { cutoff: 1300, attack: 0.01 });
+    }
   }
 }

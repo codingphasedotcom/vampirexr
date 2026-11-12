@@ -62,6 +62,7 @@ export class Minimap {
     for (const ch of game.chests.list) dot(ch.x, ch.z, '#ffd166', 5);
     for (const e of game.enemies.list) if (!e.dead && !e.t.boss) dot(e.x, e.z, COLORS[e.type] || '#fff', 2.5);
     for (const gem of game.gems.list) if (gem.heal) dot(gem.x, gem.z, '#ff5268', 3.5);
+    for (const k of game.pickups?.list || []) if (k.kind !== 'coin' && k.kind !== 'bag') dot(k.x, k.z, '#7fe8ff', 4.5); // relics
     if (game.boss && !game.boss.dead) dot(game.boss.x, game.boss.z, COLORS.boss, 7);
     g.restore();
     g.fillStyle = '#d6e4ff'; g.font = 'bold 15px system-ui'; g.textAlign = 'center';

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { rand } from './utils.js';
-import { fxTime } from './fx.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { fxTime, DECAL, noiseTexture } from './fx.js';
 import { traceEnemy, traceFlat } from './aim.js';
 import { matcapMaterial } from './toon.js';
+import { part } from './creatures.js';
 
 const dummy = new THREE.Object3D();
 const BOLT_COLOR = new THREE.Color(0x66d4ff);
@@ -12,6 +14,20 @@ const STORM_COLOR = new THREE.Color(0xc77dff);
 const HELL_COLOR = new THREE.Color(0xff4a3a);
 const HALO_COLOR = new THREE.Color(0xfff6c9);
 const TRACER_COLOR = new THREE.Color(0xffe08a);
+const WHITE = new THREE.Color(0xffffff);
+const _trail = new Float32Array(7 * 3);
+
+// Spirit orb look: hot white core fading to a coloured fresnel rim (unlit, so it reads at night and in daylight).
+function orbMaterial(color) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: color.clone() } },
+    vertexShader: 'varying vec3 vN; varying vec3 vV; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalMatrix * normal; vV = -mv.xyz; gl_Position = projectionMatrix * mv; }',
+    fragmentShader: `uniform vec3 uColor; varying vec3 vN; varying vec3 vV;
+      void main() { float f = max(dot(normalize(vN), normalize(vV)), 0.0); gl_FragColor = vec4(mix(uColor * 1.3, vec3(1.0), pow(f, 2.5)), 1.0);
+      #include <colorspace_fragment>
+      }`,
+  });
+}
 const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _m = new THREE.Vector3(), _q = new THREE.Quaternion();
 
 // Passive weapons auto-fire; the revolver uses player aim and trigger input. Stats scale with level and the player's passives.
@@ -97,7 +113,8 @@ export class Wand extends Weapon {
       dummy.updateMatrix();
       this.mesh.setMatrixAt(i, dummy.matrix);
       glow.add(s.x, 1.3, s.z, 0.6, col, 1.0);
-      for (let k = 1; k <= 5; k++) glow.add(s.x - s.vx * k * 0.018, 1.3, s.z - s.vz * k * 0.018, 0.5 - k * 0.08, col, 0.5 - k * 0.08);
+      const sp = Math.hypot(s.vx, s.vz) || 1;
+      this.game.ribbons.line(s.x - s.vx / sp * 1.1, 1.3, s.z - s.vz / sp * 1.1, s.x, 1.3, s.z, 0.16, col, 0.9);
     }
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
@@ -127,11 +144,13 @@ export class Orbs extends Weapon {
 
   orbCount() { return this.evolved ? 12 : this.level; }
   radius() { return this.area(2.2) * (this.evolved ? 1.4 : 1); }
-  onEvolve() { this.rebuild(); for (const m of this.orbs) m.material.color.set(0xffffff); }
+  onEvolve() { this.rebuild(); this.mat.uniforms.uColor.value.copy(HALO_COLOR); }
 
   rebuild() {
+    this.mat ??= orbMaterial(ORB_COLOR);
+    this.geo ??= new THREE.SphereGeometry(0.17, 16, 12);
     while (this.orbs.length < this.orbCount()) {
-      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.16, 0), new THREE.MeshBasicMaterial({ color: 0xfff1c0 }));
+      const m = new THREE.Mesh(this.geo, this.mat);
       this.group.add(m);
       this.orbs.push(m);
     }
@@ -169,15 +188,17 @@ export class Orbs extends Weapon {
       const [ox, oy, oz] = this.orbPos(i, this.angle, r);
       m.position.set(ox, oy, oz);
       m.rotation.set(fxTime.value * 2, fxTime.value * 3, 0);
-      glow.add(p.pos.x + ox, oy, p.pos.z + oz, 0.55, col, 0.7);
-      for (let k = 1; k <= 6; k++) {
-        const [tx, ty, tz] = this.orbPos(i, this.angle - k * 0.09, r);
-        glow.add(p.pos.x + tx, ty, p.pos.z + tz, 0.35 - k * 0.05, col, 0.3 - k * 0.045);
+      glow.add(p.pos.x + ox, oy, p.pos.z + oz, 0.45, col, 0.55);
+      const T = _trail;
+      for (let k = 0; k < 7; k++) {
+        const [tx, ty, tz] = this.orbPos(i, this.angle - k * 0.07, r);
+        T[(6 - k) * 3] = p.pos.x + tx; T[(6 - k) * 3 + 1] = ty; T[(6 - k) * 3 + 2] = p.pos.z + tz;
       }
+      g.ribbons.strip(T, 7, 0.22, col, 0.55, 0, 1);
     });
   }
 
-  dispose() { this.game.scene.remove(this.group); }
+  dispose() { this.game.scene.remove(this.group); this.geo?.dispose(); this.mat?.dispose(); }
 }
 
 export class Aura extends Weapon {
@@ -257,40 +278,28 @@ export class Lightning extends Weapon {
 
   constructor(game) {
     super(game);
-    this.bolts = [];
-    const scorchMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false });
-    for (let i = 0; i < 12; i++) {
-      const path = new Float32Array(10 * 3);
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(path, 3).setUsage(THREE.DynamicDrawUsage));
-      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }));
-      line.visible = false; line.frustumCulled = false;
-      const scorch = new THREE.Mesh(new THREE.CircleGeometry(0.9, 20), scorchMat.clone());
-      scorch.rotation.x = -Math.PI / 2; scorch.position.y = 0.02; scorch.visible = false;
-      game.scene.add(line, scorch);
-      this.bolts.push({ line, path, scorch, life: 0, scorchLife: 0 });
-    }
+    // bolts: { pts: Float32Array(10*3), n, life, branch } drawn as glowing ribbons; scorch marks go to the decal layer
+    this.bolts = Array.from({ length: 16 }, () => ({ pts: new Float32Array(30), n: 0, life: 0, w: 0.3 }));
     this.light = new THREE.PointLight(0xbfe8ff, 0, 16, 2);
     game.scene.add(this.light);
     this.timer = 1;
   }
 
+  bolt(w) { const b = this.bolts.find((b) => b.life <= 0) || this.bolts[0]; b.life = 1; b.w = w; return b; }
+
   // Jagged horizontal arc between two enemies (evolved chain lightning).
   arc(x0, y0, z0, x1, y1, z1) {
-    const b = this.bolts.find((b) => b.life <= 0);
-    if (!b) return;
-    const p = b.path;
+    const b = this.bolt(0.22), p = b.pts;
+    b.n = 10;
     for (let i = 0; i < 10; i++) {
       const t = i / 9, j = i > 0 && i < 9 ? 0.35 : 0;
       p[i * 3] = x0 + (x1 - x0) * t + rand(-j, j); p[i * 3 + 1] = y0 + (y1 - y0) * t + rand(-j, j); p[i * 3 + 2] = z0 + (z1 - z0) * t + rand(-j, j);
     }
-    b.line.geometry.attributes.position.needsUpdate = true;
-    b.line.visible = true; b.life = 1;
   }
 
   strikeAt(x, z) {
-    const b = this.bolts.find((b) => b.life <= 0) || this.bolts[0];
-    const p = b.path;
+    const b = this.bolt(0.42), p = b.pts;
+    b.n = 10;
     let ox = rand(-1.5, 1.5), oz = rand(-1.5, 1.5);
     for (let i = 0; i < 10; i++) {
       const t = i / 9;
@@ -299,9 +308,15 @@ export class Lightning extends Weapon {
       if (i === 9) { ox = 0; oz = 0; }
       p[i * 3] = x + ox; p[i * 3 + 1] = 9 - t * 8.8; p[i * 3 + 2] = z + oz;
     }
-    b.line.geometry.attributes.position.needsUpdate = true;
-    b.line.visible = true; b.life = 1;
-    b.scorch.position.set(x, 0.02, z); b.scorch.visible = true; b.scorchLife = 1;
+    // two forks splitting off the main channel
+    for (let f = 0; f < 2; f++) {
+      const s = 2 + Math.floor(Math.random() * 4), fb = this.bolt(0.18), q = fb.pts;
+      fb.n = 4;
+      let fx = p[s * 3], fy = p[s * 3 + 1], fz = p[s * 3 + 2];
+      const dx = rand(-1, 1), dz = rand(-1, 1);
+      for (let i = 0; i < 4; i++) { q[i * 3] = fx; q[i * 3 + 1] = fy; q[i * 3 + 2] = fz; fx += dx * 0.7 + rand(-0.3, 0.3); fy -= rand(0.5, 1.1); fz += dz * 0.7 + rand(-0.3, 0.3); }
+    }
+    this.game.decals.add(x, z, 1.0, 0xbfe8ff, DECAL.SCORCH, 10);
     this.light.position.set(x, 3, z);
     this.light.intensity = 60;
   }
@@ -320,6 +335,7 @@ export class Lightning extends Weapon {
       this.strikeAt(e.x, e.z);
       g.particles.burst(e.x, e.t.y, e.z, 0xdff6ff, 18, 5);
       g.hitEnemy(e, dmg, { quiet: true, src: 'lightning' });
+      this.lastX = e.x; this.lastZ = e.z;
       if (this.evolved) {
         let from = e;
         for (let c = 0; c < 3; c++) {
@@ -331,30 +347,26 @@ export class Lightning extends Weapon {
         }
       }
     }
-    g.sfx.zap();
+    g.sfx.zap(this.lastX, this.lastZ);
   }
 
   draw(dt) {
-    const glow = this.game.glow;
+    const g = this.game, glow = g.glow;
     this.light.intensity *= Math.max(0, 1 - dt * 9);
+    const col = this.evolved ? STORM_COLOR : ZAP_COLOR;
     for (const b of this.bolts) {
-      if (b.life > 0) {
-        b.life -= dt * 5;
-        b.line.material.opacity = Math.max(0, b.life);
-        const p = b.path;
-        for (let i = 0; i < 10; i++) glow.add(p[i * 3], p[i * 3 + 1], p[i * 3 + 2], 0.5 + (i / 9) * 0.6, ZAP_COLOR, b.life * 1.4);
-        if (b.life <= 0) b.line.visible = false;
-      }
-      if (b.scorchLife > 0) {
-        b.scorchLife -= dt * 0.3;
-        b.scorch.material.opacity = Math.max(0, b.scorchLife) * 0.7;
-        if (b.scorchLife <= 0) b.scorch.visible = false;
-      }
+      if (b.life <= 0) continue;
+      b.life -= dt * 5;
+      if (b.life <= 0) continue;
+      const flick = 0.75 + 0.25 * Math.sin(fxTime.value * 90 + b.w * 50);
+      g.ribbons.strip(b.pts, b.n, b.w * 2.6, col, b.life * 1.1 * flick, 0.15);
+      g.ribbons.strip(b.pts, b.n, b.w * 0.6, WHITE, b.life * 2.0 * flick, 0.15);
+      const p = b.pts, e = (b.n - 1) * 3;
+      if (b.n === 10) glow.add(p[e], p[e + 1] + 0.2, p[e + 2], 1.6, col, b.life * 1.4);
     }
   }
 
   dispose() {
-    for (const b of this.bolts) this.game.scene.remove(b.line, b.scorch);
     this.game.scene.remove(this.light);
   }
 }
@@ -453,7 +465,7 @@ export class Gun extends Weapon {
         gm.muzzle.getWorldPosition(_o);
         gm.getWorldQuaternion(_q);
         _d.set(0, 0, -1).applyQuaternion(_q);
-        this.fire(_o, _d, gm);
+        this.fire(_o, _d, gm, false, i);
         fired = true;
       });
     } else if (g.topdown) {
@@ -476,7 +488,7 @@ export class Gun extends Weapon {
     if (fired) this.timer = this.cd(1 / Gun.rate(this.level)) * (this.evolved ? 0.5 : 1);
   }
 
-  fire(origin, dir, gm, flat = false) {
+  fire(origin, dir, gm, flat = false, hand = -1) {
     const g = this.game, dmg = this.dmg(Gun.damage(this.level)) * (this.evolved ? 1.3 : 1), pierce = this.evolved ? 8 : this.level >= 5 ? 3 : 1;
     const hits = [];
     for (const e of g.enemies.list) {
@@ -504,7 +516,8 @@ export class Gun extends Weapon {
     this.tracers.push({ x0: _m.x, y0: _m.y, z0: _m.z, x1: origin.x + dir.x * end, y1: origin.y + dir.y * end, z1: origin.z + dir.z * end, life: 1, col: this.evolved ? HELL_COLOR : TRACER_COLOR });
     if (gm) gm.kick = 1;
     g.sfx.gunshot();
-    g.input.rumble(0.5, 0.2, 60);
+    if (hand >= 0) g.input.pulse(0.45, 30, hand); // VR: kick only the hand that fired
+    else g.input.rumble(0.5, 0.2, 60);
   }
 
   draw(dt) {
@@ -526,14 +539,12 @@ export class Gun extends Weapon {
       if (gm.visible && gm.kick > 0.5) { gm.muzzle.getWorldPosition(_m); glow.add(_m.x, _m.y, _m.z, 0.6, TRACER_COLOR, gm.kick); }
     }
     let w = 0;
+    const tw = g.topdown ? 0.14 : 0.06;
     for (const t of this.tracers) {
       t.life -= dt * 7;
       if (t.life <= 0) continue;
-      const len = Math.hypot(t.x1 - t.x0, t.y1 - t.y0, t.z1 - t.z0), n = Math.min(60, Math.ceil(len / 0.5));
-      for (let k = 0; k <= n; k++) {
-        const f = k / n;
-        glow.add(t.x0 + (t.x1 - t.x0) * f, t.y0 + (t.y1 - t.y0) * f, t.z0 + (t.z1 - t.z0) * f, 0.22, t.col, t.life * 0.7);
-      }
+      g.ribbons.line(t.x0, t.y0, t.z0, t.x1, t.y1, t.z1, tw * (0.5 + t.life * 0.8), t.col, t.life * 1.4);
+      glow.add(t.x1, t.y1, t.z1, 0.5, t.col, t.life * 0.8);
       this.tracers[w++] = t;
     }
     this.tracers.length = w;
@@ -550,4 +561,313 @@ export class Gun extends Weapon {
   }
 }
 
-export const WEAPONS = [Gun, Wand, Orbs, Aura, Lightning];
+// ---------- Holy Water: lobbed flasks that shatter into burning holy pools ----------
+const POOL_COLOR = new THREE.Color(0x6fd2ff);
+const POOL_MAX = 14;
+function poolMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: fxTime, uNoise: { value: noiseTexture() }, uColor: { value: POOL_COLOR.clone() } },
+    vertexShader: `attribute vec2 aPool; varying vec2 vUv; varying vec2 vPool;
+      void main() { vUv = uv; vPool = aPool; gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform float uTime; uniform sampler2D uNoise; uniform vec3 uColor; varying vec2 vUv; varying vec2 vPool;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+        if (r > 1.0 || vPool.y <= 0.0) discard;
+        float n = texture2D(uNoise, p * 0.55 + vec2(uTime * 0.12, -uTime * 0.09) + vPool.x).r;
+        float m = texture2D(uNoise, p * 1.4 - vec2(uTime * 0.3, uTime * 0.22) + vPool.x * 2.0).r;
+        float edge = smoothstep(1.0, 0.86, r) * smoothstep(0.5, 0.95, r + (n - 0.5) * 0.35);
+        float fill = (0.18 + 0.5 * m) * smoothstep(1.0, 0.2, r);
+        float tongues = smoothstep(0.62, 0.8, m) * smoothstep(1.0, 0.5, r) * 0.8;
+        float a = (edge * 1.25 + fill * 0.55 + tongues) * vPool.y * (0.88 + 0.12 * sin(uTime * 22.0 + vPool.x * 30.0));
+        vec3 col = mix(uColor, vec3(1.0), clamp(tongues + edge * 0.4, 0.0, 1.0));
+        gl_FragColor = vec4(col * a, a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+}
+function flaskGeometry() {
+  return mergeGeometries([
+    part(new THREE.SphereGeometry(0.1, 10, 8), 0x7fd8ff, { p: [0, 0, 0] }),
+    part(new THREE.CylinderGeometry(0.03, 0.04, 0.09, 8), 0xbfeaff, { p: [0, 0.12, 0] }),
+    part(new THREE.CylinderGeometry(0.035, 0.035, 0.04, 8), 0x7a4a2a, { p: [0, 0.18, 0] }),
+  ]);
+}
+
+export class HolyWater extends Weapon {
+  static id = 'water';
+  static title = 'Holy Water';
+  static count(l) { return 1 + Math.floor(l / 3); }
+  static damage(l) { return 7 + l * 3; }
+  static evolution = { passive: 'regen', title: 'Blessed Flood', desc: 'Vast pools that last twice as long, +50% damage. Standing in one heals you.' };
+  static describe(l) {
+    if (l === 1) return 'Lobs flasks that shatter into burning holy pools.';
+    return `${HolyWater.count(l)} flask${HolyWater.count(l) > 1 ? 's' : ''}, ${HolyWater.damage(l)} damage per tick, wider pools.`;
+  }
+
+  constructor(game) {
+    super(game);
+    this.timer = 0.8;
+    this.flasks = []; this.pools = [];
+    this.flaskMesh = new THREE.InstancedMesh(flaskGeometry(), matcapMaterial({ vertexColors: true }), 12);
+    this.flaskMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.flaskMesh.frustumCulled = false; this.flaskMesh.count = 0;
+    const geo = new THREE.CircleGeometry(1, 40).rotateX(-Math.PI / 2);
+    this.poolData = new THREE.InstancedBufferAttribute(new Float32Array(POOL_MAX * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute('aPool', this.poolData);
+    this.poolMesh = new THREE.InstancedMesh(geo, poolMaterial(), POOL_MAX);
+    this.poolMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.poolMesh.frustumCulled = false; this.poolMesh.count = 0; this.poolMesh.renderOrder = 2;
+    game.scene.add(this.flaskMesh, this.poolMesh);
+  }
+
+  radius() { return this.area(1.4 + this.level * 0.12) * (this.evolved ? 1.6 : 1); }
+  duration() { return (2.4 + this.level * 0.25) * (this.evolved ? 2 : 1); }
+
+  update(dt) {
+    const g = this.game, p = g.player.pos;
+    this.timer -= dt;
+    if (this.timer <= 0) {
+      this.timer = this.cd(Math.max(1.7, 3.0 - this.level * 0.15));
+      const pool = [];
+      g.enemies.forEachNear(p.x, p.z, 11, (e) => { if (Math.hypot(e.x - p.x, e.z - p.z) < 11) pool.push(e); });
+      const n = HolyWater.count(this.level) + (this.evolved ? 1 : 0);
+      for (let i = 0; i < n && this.flasks.length < 12; i++) {
+        let tx, tz;
+        if (pool.length) { const e = pool.splice(Math.floor(Math.random() * pool.length), 1)[0]; tx = e.x; tz = e.z; }
+        else { const a = rand(0, Math.PI * 2), d = rand(3, 7); tx = p.x + Math.cos(a) * d; tz = p.z + Math.sin(a) * d; }
+        this.flasks.push({ x0: p.x, z0: p.z, x1: tx, z1: tz, t: 0, dur: 0.5 + i * 0.08, spin: rand(0, 6) });
+      }
+      g.sfx.whoosh();
+    }
+    let w = 0;
+    for (const f of this.flasks) {
+      f.t += dt;
+      if (f.t >= f.dur) { this.shatter(f.x1, f.z1); continue; }
+      this.flasks[w++] = f;
+    }
+    this.flasks.length = w;
+    const dmg = this.dmg(HolyWater.damage(this.level)) * (this.evolved ? 1.5 : 1);
+    let healing = false;
+    w = 0;
+    for (const pl of this.pools) {
+      pl.life -= dt; pl.tick -= dt;
+      if (pl.life <= 0) continue;
+      if (pl.tick <= 0) {
+        pl.tick = 0.35;
+        g.enemies.forEachNear(pl.x, pl.z, pl.r + 1, (e) => {
+          if (Math.hypot(e.x - pl.x, e.z - pl.z) < pl.r + e.size * 0.4) g.hitEnemy(e, dmg, { quiet: true, src: 'water' });
+        });
+      }
+      if (this.evolved && Math.hypot(p.x - pl.x, p.z - pl.z) < pl.r) healing = true;
+      this.pools[w++] = pl;
+    }
+    this.pools.length = w;
+    if (healing) g.player.heal(2.5 * dt);
+  }
+
+  shatter(x, z) {
+    const g = this.game;
+    if (this.pools.length >= POOL_MAX) this.pools.shift();
+    this.pools.push({ x, z, r: this.radius(), life: this.duration(), max: this.duration(), tick: 0, seed: Math.random() });
+    g.particles.burst(x, 0.3, z, 0x9fe8ff, 14, 3.5);
+    g.particles.burst(x, 0.3, z, 0xffffff, 6, 2);
+    g.sfx.splash(x, z);
+  }
+
+  draw() {
+    const g = this.game, glow = g.glow;
+    let i = 0;
+    for (const f of this.flasks) {
+      const k = f.t / f.dur, x = f.x0 + (f.x1 - f.x0) * k, z = f.z0 + (f.z1 - f.z0) * k, y = 1.2 + Math.sin(Math.PI * k) * 2.4 - k * 0.9;
+      dummy.position.set(x, y, z); dummy.rotation.set(f.t * 9 + f.spin, f.spin, f.t * 6); dummy.scale.setScalar(1.3); dummy.updateMatrix();
+      this.flaskMesh.setMatrixAt(i++, dummy.matrix);
+      glow.add(x, y, z, 0.5, POOL_COLOR, 0.6);
+    }
+    this.flaskMesh.count = i; this.flaskMesh.instanceMatrix.needsUpdate = true;
+    i = 0;
+    for (const pl of this.pools) {
+      const age = pl.max - pl.life, grow = 1 - Math.pow(1 - Math.min(1, age / 0.25), 3);
+      dummy.position.set(pl.x, 0.045, pl.z); dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(pl.r * grow); dummy.updateMatrix();
+      this.poolMesh.setMatrixAt(i, dummy.matrix);
+      this.poolData.setXY(i, pl.seed, Math.min(1, pl.life / 0.5) * 0.9);
+      i++;
+      const t = fxTime.value;
+      for (let k = 0; k < 3; k++) {
+        const a = t * 1.3 + k * 2.1 + pl.seed * 6;
+        glow.add(pl.x + Math.cos(a) * pl.r * 0.7, 0.35 + 0.15 * Math.sin(t * 7 + k), pl.z + Math.sin(a) * pl.r * 0.7, 0.8, POOL_COLOR, 0.35 * Math.min(1, pl.life));
+      }
+    }
+    this.poolMesh.count = i; this.poolMesh.instanceMatrix.needsUpdate = true; this.poolData.needsUpdate = true;
+  }
+
+  dispose() { this.game.scene.remove(this.flaskMesh, this.poolMesh); this.flaskMesh.geometry.dispose(); this.poolMesh.geometry.dispose(); this.poolMesh.material.dispose(); }
+}
+
+// ---------- Silver Cross: a spinning boomerang that cuts out through the horde and back ----------
+const CROSS_COLOR = new THREE.Color(0xe8f0ff);
+function crossGeometry() {
+  return mergeGeometries([
+    new THREE.BoxGeometry(0.11, 0.05, 0.86),
+    new THREE.BoxGeometry(0.56, 0.05, 0.11).translate(0, 0, -0.16),
+    new THREE.CylinderGeometry(0.075, 0.075, 0.07, 10).translate(0, 0, -0.16),
+  ]);
+}
+
+export class Cross extends Weapon {
+  static id = 'cross';
+  static title = 'Silver Cross';
+  static count(l) { return 1 + Math.floor((l - 1) / 3); }
+  static damage(l) { return 16 + l * 6; }
+  static evolution = { passive: 'magnet', title: 'Grand Cross', desc: 'Four giant crosses, +40% damage. They sweep every gem they pass back to you.' };
+  static describe(l) {
+    if (l === 1) return 'Hurls a cross that cuts through enemies and returns.';
+    return `${Cross.count(l)} cross${Cross.count(l) > 1 ? 'es' : ''}, ${Cross.damage(l)} damage each pass.`;
+  }
+
+  constructor(game) {
+    super(game);
+    this.timer = 0.6;
+    this.list = [];
+    this.mesh = new THREE.InstancedMesh(crossGeometry(), matcapMaterial({ color: 0xdfe6f7 }), 8);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false; this.mesh.count = 0;
+    game.scene.add(this.mesh);
+  }
+
+  size() { return this.area(1) * (this.evolved ? 1.6 : 1); }
+
+  update(dt) {
+    const g = this.game, p = g.player.pos;
+    this.timer -= dt;
+    if (this.timer <= 0 && this.list.length < 8) {
+      this.timer = this.cd(Math.max(1.3, 2.4 - this.level * 0.1));
+      const n = this.evolved ? 4 : Cross.count(this.level);
+      const t = g.enemies.nearestN(p, 14, 1)[0];
+      if (!t && !g.topdown) { g.camera.getWorldDirection(_d); _d.y = 0; } else _d.copy(g.aimDir);
+      const base = t ? Math.atan2(t.z - p.z, t.x - p.x) : Math.atan2(_d.z, _d.x);
+      for (let i = 0; i < n; i++) {
+        const a = base + (n > 1 ? (i / (n - 1) - 0.5) * (this.evolved ? Math.PI * 1.5 : 0.7) : 0);
+        this.list.push({ x: p.x, z: p.z, vx: Math.cos(a) * 17, vz: Math.sin(a) * 17, back: false, t: 0, hit: new Set(), spin: rand(0, 6) });
+      }
+      g.sfx.whoosh();
+    }
+    const dmg = this.dmg(Cross.damage(this.level)) * (this.evolved ? 1.4 : 1), R = 0.55 * this.size();
+    let w = 0;
+    for (const c of this.list) {
+      c.t += dt;
+      if (!c.back) {
+        const sp = Math.hypot(c.vx, c.vz), ns = Math.max(0, sp - 24 * dt);
+        if (sp > 0) { c.vx *= ns / sp; c.vz *= ns / sp; }
+        if (ns <= 0.5) { c.back = true; c.hit.clear(); }
+      } else {
+        const dx = p.x - c.x, dz = p.z - c.z, d = Math.hypot(dx, dz) || 1, sp = Math.min(22, 4 + (c.t - 0.7) * 30);
+        c.vx = dx / d * sp; c.vz = dz / d * sp;
+        if (d < 0.9) continue; // caught
+      }
+      c.x += c.vx * dt; c.z += c.vz * dt;
+      g.enemies.forEachNear(c.x, c.z, R + 1.2, (e) => {
+        if (c.hit.has(e) || Math.hypot(e.x - c.x, e.z - c.z) > R + e.size * 0.5) return;
+        c.hit.add(e);
+        g.hitEnemy(e, dmg, { src: 'cross' });
+        g.enemies.knockback(e, c.x, c.z, 2.5);
+      });
+      if (this.evolved) for (const gem of g.gems.list) if (!gem.pull && Math.abs(gem.x - c.x) < 1.6 && Math.abs(gem.z - c.z) < 1.6) gem.pull = true;
+      if (c.t > 4) continue;
+      this.list[w++] = c;
+    }
+    this.list.length = w;
+  }
+
+  draw() {
+    const g = this.game, s = this.size();
+    let i = 0;
+    for (const c of this.list) {
+      dummy.position.set(c.x, 1.15, c.z); dummy.rotation.set(0.35, c.spin + fxTime.value * 16, 0, 'YXZ'); dummy.scale.setScalar(s); dummy.updateMatrix();
+      this.mesh.setMatrixAt(i++, dummy.matrix);
+      g.glow.add(c.x, 1.15, c.z, 0.9 * s, CROSS_COLOR, 0.45);
+      const sp = Math.hypot(c.vx, c.vz) || 1;
+      g.ribbons.line(c.x - c.vx / sp * 1.2, 1.15, c.z - c.vz / sp * 1.2, c.x, 1.15, c.z, 0.5 * s, CROSS_COLOR, 0.35);
+    }
+    this.mesh.count = i; this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  dispose() { this.game.scene.remove(this.mesh); this.mesh.geometry.dispose(); }
+}
+
+// ---------- Frost Nova: a ring of ice that bursts outward, damaging and freezing everything it passes ----------
+const FROST_COLOR = new THREE.Color(0x9fe8ff);
+function novaMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: fxTime, uNoise: { value: noiseTexture() }, uAlpha: { value: 0 }, uColor: { value: FROST_COLOR.clone() } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform float uTime, uAlpha; uniform sampler2D uNoise; uniform vec3 uColor; varying vec2 vUv;
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0; float r = length(p);
+        if (r > 1.0) discard;
+        float ang = atan(p.y, p.x);
+        float shards = pow(abs(sin(ang * 13.0)), 6.0) * smoothstep(0.55, 0.98, r);
+        float n = texture2D(uNoise, p * 0.9 + uTime * 0.05).r;
+        float ring = smoothstep(0.78, 0.97, r) * (1.0 - smoothstep(0.97, 1.0, r));
+        float frost = smoothstep(0.35, 1.0, r) * (0.25 + 0.5 * n) * 0.5;
+        float a = (ring * 1.4 + shards * 0.7 + frost) * uAlpha;
+        gl_FragColor = vec4(mix(uColor, vec3(1.0), ring * 0.6) * a, a);
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+}
+
+export class FrostNova extends Weapon {
+  static id = 'frost';
+  static title = 'Frost Nova';
+  static damage(l) { return 12 + l * 5; }
+  static evolution = { passive: 'vigor', title: 'Absolute Zero', desc: 'A vast blizzard ring that freezes for 2.5 s. Frozen foes take +50% damage from everything.' };
+  static describe(l) {
+    if (l === 1) return 'Bursts outward, damaging and freezing nearby enemies.';
+    return `${FrostNova.damage(l)} damage, wider ring, ${(1 + l * 0.12).toFixed(1)} s freeze.`;
+  }
+
+  constructor(game) {
+    super(game);
+    this.timer = 1.5;
+    this.wave = 1; // 0..1 progress of the current burst visual
+    this.mesh = new THREE.Mesh(new THREE.CircleGeometry(1, 64).rotateX(-Math.PI / 2), novaMaterial());
+    this.mesh.renderOrder = 2; this.mesh.frustumCulled = false; this.mesh.visible = false;
+    game.scene.add(this.mesh);
+  }
+
+  radius() { return this.area(3.6 + this.level * 0.35) * (this.evolved ? 1.4 : 1); }
+  onEvolve() { this.game.frostBonus = true; }
+
+  update(dt) {
+    const g = this.game, p = g.player.pos;
+    this.timer -= dt;
+    if (this.timer > 0) return;
+    this.timer = this.cd(Math.max(2.6, 4.2 - this.level * 0.18));
+    const R = this.radius(), dmg = this.dmg(FrostNova.damage(this.level)) * (this.evolved ? 1.5 : 1);
+    const hold = this.evolved ? 2.5 : 1 + this.level * 0.12;
+    g.enemies.forEachNear(p.x, p.z, R + 1, (e) => {
+      if (Math.hypot(e.x - p.x, e.z - p.z) > R + e.size * 0.5) return;
+      g.hitEnemy(e, dmg, { quiet: true, src: 'frost' });
+      if (!e.dead) e.frozenUntil = g.time + (e.t.boss ? hold * 0.3 : hold);
+    });
+    this.wave = 0; this.cx = p.x; this.cz = p.z; this.R = R;
+    g.particles.burst(p.x, 0.6, p.z, 0xcff6ff, 30, 7);
+    g.sfx.frost();
+  }
+
+  draw(dt) {
+    if (this.wave >= 1) { this.mesh.visible = false; return; }
+    this.wave = Math.min(1, this.wave + dt / 0.45);
+    const e = 1 - Math.pow(1 - this.wave, 3);
+    this.mesh.visible = true;
+    this.mesh.position.set(this.cx, 0.06, this.cz);
+    this.mesh.scale.setScalar(Math.max(0.01, this.R * e));
+    this.mesh.material.uniforms.uAlpha.value = 1 - this.wave * this.wave;
+  }
+
+  dispose() { this.game.scene.remove(this.mesh); this.mesh.geometry.dispose(); this.mesh.material.dispose(); }
+}
+
+export const WEAPONS = [Gun, Wand, Orbs, Aura, Lightning, HolyWater, Cross, FrostNova];

@@ -22,7 +22,7 @@ export class CastleSiege {
     g.wave = index + 1; g.hpMul = this.room.hp;
     g.world.ambient.setGate(index - 1, false);
     g.bossFx.reset();
-    g.hud.toast(`${index + 1}/4 — ${this.room.name}`, 4);
+    g.banner?.show(this.room.name.toUpperCase(), index === 0 ? 'Clear every chamber. Slay the Vampire Lord.' : 'The gate seals behind you', { kicker: `Chamber ${index + 1} / 4`, color: '#c9b8ff', seconds: 2.8 });
   }
   update(dt) {
     const g = this.game;
@@ -48,7 +48,7 @@ export class CastleSiege {
       this.bossSent = true;
       const def = BOSSES.find(b => b.name === this.room.boss);
       g.boss = g.enemies.spawnBoss(def, 0, this.room.z - 5, this.index === 3 ? 0.35 : 0.25);
-      g.hud.toast(`${def.name} guards the gate!`, 4); g.sfx.roar();
+      if (g.bossIntro) g.bossIntro(def); else { g.hud.toast(`${def.name} guards the gate!`, 4); g.sfx.roar(); }
       return;
     }
     this.cleared = true; this.bossSent = false;

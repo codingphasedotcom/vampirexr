@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { rand, makeCanvas } from './utils.js';
-import { glowTexture, fxTime } from './fx.js';
+import { glowTexture, fxTime, noiseTexture } from './fx.js';
+export { noiseTexture };
 import { RAMP } from './toon.js';
 
 // Shared world machinery: colliders, prop scattering, sky/fog/lights/ground driven by a level definition
@@ -58,8 +59,9 @@ export class Colliders {
   overlaps(x, z, r) { const o = { x, z }; this.resolve(x, z, r, o); return o.x !== x || o.z !== z; }
 }
 
-// Random ring placement for an InstancedMesh; `place(d, i)` sets rotation/scale, `radiusFn` adds a circle collider.
-export function scatter(mesh, count, rMin, rMax, place, colliders, radiusFn) {
+// Random ring placement for an InstancedMesh; `place(d, i)` sets rotation/scale, `radiusFn` adds a circle collider,
+// `heightFn` (optional) makes that collider a shadow caster of that height in the light bake (strength `k`).
+export function scatter(mesh, count, rMin, rMax, place, colliders, radiusFn, heightFn, k = 1) {
   for (let i = 0; i < count; i++) {
     const a = rand(0, Math.PI * 2), r = rand(rMin, rMax);
     _d.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
@@ -67,7 +69,7 @@ export function scatter(mesh, count, rMin, rMax, place, colliders, radiusFn) {
     place(_d, i);
     _d.updateMatrix();
     mesh.setMatrixAt(i, _d.matrix);
-    if (colliders && radiusFn) colliders.add({ x: _d.position.x, z: _d.position.z, r: radiusFn(_d) });
+    if (colliders && radiusFn) colliders.add({ x: _d.position.x, z: _d.position.z, r: radiusFn(_d), h: heightFn ? heightFn(_d) : 0, k });
   }
   return mesh;
 }
@@ -95,46 +97,237 @@ function cloudTexture() {
   return new THREE.CanvasTexture(c);
 }
 
-// Tileable fractal value noise (R channel), shared by ground variation and ground fog.
-let _noise = null;
-export function noiseTexture() {
-  if (_noise) return _noise;
-  const S = 256, data = new Uint8Array(S * S * 4), acc = new Float32Array(S * S);
-  let amp = 1, total = 0;
-  for (const period of [4, 8, 16, 32, 64]) {
-    const lat = new Float32Array(period * period).map(() => Math.random());
-    const cell = S / period;
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const gx = x / cell, gy = y / cell, x0 = Math.floor(gx), y0 = Math.floor(gy);
-      const fx = gx - x0, fy = gy - y0, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
-      const v = (i, j) => lat[((y0 + j) % period) * period + ((x0 + i) % period)];
-      acc[y * S + x] += amp * ((v(0, 0) * (1 - sx) + v(1, 0) * sx) * (1 - sy) + (v(0, 1) * (1 - sx) + v(1, 1) * sx) * sy);
-    }
-    total += amp; amp *= 0.55;
-  }
-  for (let i = 0; i < S * S; i++) { const v = Math.round((acc[i] / total) * 255); data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v; data[i * 4 + 3] = 255; }
-  _noise = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
-  _noise.wrapS = _noise.wrapT = THREE.RepeatWrapping;
-  _noise.magFilter = _noise.minFilter = THREE.LinearFilter;
-  _noise.needsUpdate = true;
-  return _noise;
+// ---------- Baked lighting ----------
+// While building, a level registers shadow casters and static lights; then everything is painted once into a
+// 1024² RGBA texture covering ±100 m: RGB = light pools (braziers, street lamps, torches, windows), A = occlusion
+// (contact AO under every prop + long sun/moon shadows along the key light). Ground and props read it in their
+// shaders (one texture fetch, no runtime lights); creatures sample it on the CPU as light probes (World.probe).
+const BAKE_RES = 1024, BAKE_EXTENT = 200;
+const _neutral = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat);
+_neutral.needsUpdate = true;
+export const bakeUniforms = { uBake: { value: _neutral }, uBakeSize: { value: BAKE_EXTENT }, uBakeLight: { value: 1 }, uBakeShadow: { value: 1 } };
+
+function hull(pts) { // monotone-chain convex hull of [[x, y], ...]
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const p of pts) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+  up.pop(); lo.pop();
+  return lo.concat(up);
 }
 
-// Breaks up the obvious tiling of canvas ground textures with two octaves of large-scale light/dark noise.
-function macroVariation(mat, strength) {
+export class LightBake {
+  constructor() { this.circles = []; this.boxes = []; this.lights = []; this.data = null; this.texture = null; }
+  // Round caster: footprint radius r, top height h, strength k; yb > 0 lifts it off the ground (tree canopies).
+  circle(x, z, r, h, k = 1, yb = 0) { this.circles.push({ x, z, r, h, k, yb }); }
+  // Rectangular caster: centre, half sizes, yaw (local +x points along (cos yaw, sin yaw) in x/z), top yt, bottom yb.
+  box(x, z, hx, hz, yaw, yt, k = 1, yb = 0) { this.boxes.push({ x, z, hx, hz, yaw, yt, k, yb }); }
+  segment(x1, z1, x2, z2, r, h, k = 1) {
+    const len = Math.hypot(x2 - x1, z2 - z1);
+    this.box((x1 + x2) / 2, (z1 + z2) / 2, len / 2 + r, r, Math.atan2(z2 - z1, x2 - x1), h, k);
+  }
+  light(x, z, radius, color, intensity = 1) { this.lights.push({ x, z, radius, color: new THREE.Color(color), intensity }); }
+
+  build(keyPos, { shadow = 0.55, maxLen = 14 } = {}) {
+    const S = BAKE_RES, E = BAKE_EXTENT, ppm = S / E, toPx = (v) => (v / E + 0.5) * S;
+    const kl = Math.hypot(keyPos[0], keyPos[2]) || 1;
+    const dx = -keyPos[0] / kl, dz = -keyPos[2] / kl, cot = kl / Math.max(1, keyPos[1]); // shadows fall away from the key light
+    const occ = makeCanvas(S, S), g = occ.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
+    if ('filter' in g) g.filter = 'blur(1.5px)';
+    const shade = (a) => `rgba(0,0,0,${Math.min(1, a).toFixed(3)})`;
+    // long shadows: round casters sweep a capsule, boxes sweep the hull of their footprint
+    for (const c of this.circles) {
+      const from = Math.min(maxLen, c.yb * cot), to = Math.max(from + 0.01, Math.min(maxLen, c.h * cot));
+      const x0 = toPx(c.x + dx * from), y0 = toPx(c.z + dz * from), x1 = toPx(c.x + dx * to), y1 = toPx(c.z + dz * to), r = Math.max(1, c.r * ppm);
+      const grad = g.createLinearGradient(x0, y0, x1, y1);
+      grad.addColorStop(0, shade(shadow * c.k)); grad.addColorStop(1, shade(shadow * c.k * 0.3));
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      g.fillStyle = grad; g.beginPath();
+      g.arc(x0, y0, r, ang + Math.PI / 2, ang + Math.PI * 1.5);
+      g.arc(x1, y1, r, ang - Math.PI / 2, ang + Math.PI / 2);
+      g.closePath(); g.fill();
+    }
+    for (const b of this.boxes) {
+      const c = Math.cos(b.yaw), sn = Math.sin(b.yaw), from = Math.min(maxLen, b.yb * cot), to = Math.min(maxLen, b.yt * cot), pts = [];
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const fx = b.x + sx * b.hx * c - sz * b.hz * sn, fz = b.z + sx * b.hx * sn + sz * b.hz * c;
+        pts.push([toPx(fx + dx * from), toPx(fz + dz * from)], [toPx(fx + dx * to), toPx(fz + dz * to)]);
+      }
+      const h = hull(pts);
+      const grad = g.createLinearGradient(toPx(b.x + dx * from), toPx(b.z + dz * from), toPx(b.x + dx * to), toPx(b.z + dz * to));
+      grad.addColorStop(0, shade(shadow * b.k)); grad.addColorStop(1, shade(shadow * b.k * 0.35));
+      g.fillStyle = grad; g.beginPath(); g.moveTo(h[0][0], h[0][1]);
+      for (let i = 1; i < h.length; i++) g.lineTo(h[i][0], h[i][1]);
+      g.closePath(); g.fill();
+    }
+    // contact ambient occlusion where things meet the ground
+    for (const c of this.circles) {
+      if (c.yb > 0.4) continue;
+      const x = toPx(c.x), y = toPx(c.z), r = Math.max(2, c.r * 2.4 * ppm), grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, shade(0.5 * c.k)); grad.addColorStop(1, shade(0));
+      g.fillStyle = grad; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    g.lineJoin = 'round';
+    for (const b of this.boxes) {
+      if (b.yb > 0.4) continue;
+      const c = Math.cos(b.yaw), sn = Math.sin(b.yaw);
+      g.beginPath();
+      [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([sx, sz], i) => {
+        const x = toPx(b.x + sx * b.hx * c - sz * b.hz * sn), y = toPx(b.z + sx * b.hx * sn + sz * b.hz * c);
+        if (i) g.lineTo(x, y); else g.moveTo(x, y);
+      });
+      g.closePath();
+      g.fillStyle = shade(0.4 * b.k); g.fill();
+      g.strokeStyle = shade(0.22 * b.k); g.lineWidth = Math.max(2, 0.9 * ppm); g.stroke();
+    }
+    // light pools, added together
+    const lc = makeCanvas(S, S), lg = lc.getContext('2d');
+    lg.fillStyle = '#000'; lg.fillRect(0, 0, S, S);
+    lg.globalCompositeOperation = 'lighter';
+    for (const L of this.lights) {
+      const x = toPx(L.x), y = toPx(L.z), r = L.radius * ppm, I = Math.min(1, L.intensity);
+      const rgb = `${Math.round(L.color.r * 255)},${Math.round(L.color.g * 255)},${Math.round(L.color.b * 255)}`;
+      const grad = lg.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, `rgba(${rgb},${I})`); grad.addColorStop(0.25, `rgba(${rgb},${(I * 0.5).toFixed(3)})`); grad.addColorStop(1, `rgba(${rgb},0)`);
+      lg.fillStyle = grad; lg.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    const od = g.getImageData(0, 0, S, S).data, ld = lg.getImageData(0, 0, S, S).data, data = new Uint8Array(S * S * 4);
+    for (let i = 0, n = S * S; i < n; i++) {
+      const o = i * 4;
+      data[o] = ld[o]; data[o + 1] = ld[o + 1]; data[o + 2] = ld[o + 2]; data[o + 3] = od[o];
+    }
+    for (let k = 0; k < S; k++) for (const [u, v] of [[k, 0], [k, S - 1], [0, k], [S - 1, k]]) { // neutral rim: ClampToEdge stays open/unlit outside
+      const o = (v * S + u) * 4; data[o] = data[o + 1] = data[o + 2] = 0; data[o + 3] = 255;
+    }
+    const tex = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+    tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true;
+    tex.needsUpdate = true;
+    this.data = data; this.texture = tex;
+    return tex;
+  }
+
+  // CPU light probe: albedo multiplier for a creature standing at (x, z) (shadow darkens, light pools tint/brighten).
+  probe(x, z, out, shadowK = 1, lightK = 1) {
+    if (!this.data) return out.setScalar(1);
+    const S = BAKE_RES, u = Math.floor((x / BAKE_EXTENT + 0.5) * S), v = Math.floor((z / BAKE_EXTENT + 0.5) * S);
+    if (u < 0 || v < 0 || u >= S || v >= S) return out.setScalar(1);
+    const i = (v * S + u) * 4, d = this.data, o = 1 - (1 - d[i + 3] / 255) * 0.65 * shadowK, k = (lightK * 1.5) / 255;
+    return out.setRGB(o + d[i] * k, o + d[i + 1] * k, o + d[i + 2] * k);
+  }
+}
+
+// Prop shading from the bake: light pools on the lower few metres, contact darkening near the ground and a share of
+// the baked occlusion. `ground` = flat surfaces (roads) that take shadows at full strength like the terrain.
+function bakeProps(mat, ground) {
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, bakeUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBakeW;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        { vec4 bw = vec4(transformed, 1.0);
+          #ifdef USE_INSTANCING
+            bw = instanceMatrix * bw;
+          #endif
+          vBakeW = (modelMatrix * bw).xyz; }`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uBake; uniform float uBakeSize, uBakeLight, uBakeShadow; varying vec3 vBakeW;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          vec4 bk = texture2D(uBake, vBakeW.xz / uBakeSize + 0.5);
+          ${ground ? 'diffuseColor.rgb *= mix(1.0, bk.a, uBakeShadow);'
+            : 'diffuseColor.rgb *= mix(1.0, mix(1.0, bk.a, 0.4) * mix(0.7, 1.0, smoothstep(0.0, 1.1, vBakeW.y)), uBakeShadow);'}
+          totalEmissiveRadiance += diffuseColor.rgb * bk.rgb * uBakeLight * ${ground ? '2.6' : '2.0'} * (1.0 - smoothstep(1.5, 7.0, vBakeW.y));
+        }`);
+  };
+  mat.customProgramCacheKey = () => `prop-bake-${ground ? 'g' : 'p'}`;
+  return mat;
+}
+
+// Ground shading that hides tiling: the base texture is sampled twice (second copy rotated and rescaled) and the two
+// are swapped by large-scale noise, an optional second surface (`groundAlt`: moss, dirt, snow…) is blended in organic
+// patches, and two octaves of light/dark macro noise sit on top. Five texture reads, no extra draw calls.
+function groundMaterial(level) {
+  const strength = level.groundVariation ?? 0.35;
+  const alt = level.groundAlt ? level.groundAlt() : null;
+  const mat = new THREE.MeshLambertMaterial({ map: level.ground() });
+  const [lo, hi] = level.groundAltMask ?? [0.45, 0.62];
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uMacro = { value: noiseTexture() };
+    Object.assign(shader.uniforms, bakeUniforms);
+    if (alt) { shader.uniforms.uAlt = { value: alt }; shader.uniforms.uAltScale = { value: level.groundAltScale ?? 0.8 }; }
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec2 vMacro;')
-      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMacro = uv * 7.0;');
+      .replace('#include <common>', '#include <common>\nvarying vec2 vMacro; varying vec2 vBakeUv; uniform float uBakeSize;')
+      .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMacro = uv * 7.0;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvBakeUv = (modelMatrix * vec4(transformed, 1.0)).xz / uBakeSize + 0.5;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2D uMacro; varying vec2 vMacro;')
-      .replace('#include <map_fragment>', `#include <map_fragment>
+      .replace('#include <common>', `#include <common>\nuniform sampler2D uMacro; varying vec2 vMacro; varying vec2 vBakeUv;
+        uniform sampler2D uBake; uniform float uBakeLight, uBakeShadow;${alt ? '\nuniform sampler2D uAlt; uniform float uAltScale;' : ''}`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += diffuseColor.rgb * bakeT.rgb * uBakeLight * 2.6; // baked light pools`)
+      .replace('#include <map_fragment>', `
         float mA = texture2D(uMacro, vMacro).r, mB = texture2D(uMacro, vMacro * 4.3 + 0.37).r;
-        diffuseColor.rgb *= mix(1.0 - ${strength.toFixed(2)}, 1.0 + ${(strength * 0.4).toFixed(2)}, smoothstep(0.25, 0.75, mA)) * mix(0.88, 1.08, mB);`);
+        vec4 tA = texture2D(map, vMapUv);
+        vec4 tB = texture2D(map, mat2(0.8, -0.6, 0.6, 0.8) * vMapUv * 0.71 + vec2(0.37, 0.21));
+        vec4 groundTex = mix(tA, tB, smoothstep(0.42, 0.58, mB));
+        ${alt ? `float altMask = smoothstep(${lo.toFixed(2)}, ${hi.toFixed(2)}, mA * 0.7 + mB * 0.3);
+        groundTex = mix(groundTex, texture2D(uAlt, vMapUv * uAltScale), altMask);` : ''}
+        diffuseColor *= groundTex;
+        diffuseColor.rgb *= mix(1.0 - ${strength.toFixed(2)}, 1.0 + ${(strength * 0.4).toFixed(2)}, smoothstep(0.25, 0.75, mA)) * mix(0.88, 1.08, mB);
+        vec4 bakeT = texture2D(uBake, vBakeUv);
+        diffuseColor.rgb *= mix(1.0, bakeT.a, uBakeShadow); // baked contact AO + sun/moon shadows`);
   };
-  mat.customProgramCacheKey = () => `ground-macro-${strength}`;
+  mat.customProgramCacheKey = () => `ground-${level.id}-${strength}-${alt ? 'alt' : 'base'}`;
   return mat;
+}
+
+// Procedural sky dome: gradient + horizon glow, a twinkling hashed star field and drifting nebula wisps (night levels),
+// all in one fragment shader. It follows the camera (stars sit at infinity) and is drawn after opaque geometry so
+// early-z skips every pixel hidden by the ground and props.
+const SKY_FRAG = `uniform vec3 uTop, uHorizon, uNebulaA, uNebulaB; uniform float uStars, uTime, uNebula; uniform sampler2D uNoise;
+  varying vec3 vDir;
+  vec3 hash33(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
+  void main() {
+    vec3 d = normalize(vDir);
+    float h = d.y;
+    vec3 col = mix(uHorizon, uTop, smoothstep(-0.02, 0.5, h));
+    col += uHorizon * 0.22 * exp(-abs(h) * 16.0);
+    if (uStars > 0.001 && h > -0.06) {
+      vec3 p = d * 90.0, cell = floor(p), r = hash33(cell);
+      float dist = length(p - (cell + 0.3 + r * 0.4));
+      float size = 0.08 + 0.2 * r.y * r.y;
+      float tw = 0.55 + 0.45 * sin(uTime * (1.3 + r.z * 3.0) + r.y * 40.0);
+      float star = step(0.9, r.x) * smoothstep(size, size * 0.15, dist) * tw;
+      vec3 starCol = mix(vec3(0.72, 0.8, 1.0), vec3(1.0, 0.86, 0.72), r.z);
+      float horizonFade = smoothstep(-0.04, 0.22, h);
+      col += starCol * star * uStars * horizonFade * 1.5;
+      vec2 uv = d.xz / (h + 0.42);
+      float n1 = texture2D(uNoise, uv * 0.16 + vec2(uTime * 0.0015, 0.0)).r;
+      float n2 = texture2D(uNoise, uv * 0.41 - vec2(0.0, uTime * 0.0025)).r;
+      float neb = smoothstep(0.48, 0.86, n1 * 0.72 + n2 * 0.48) * smoothstep(0.02, 0.4, h);
+      col += mix(uNebulaA, uNebulaB, n2) * neb * uNebula * uStars;
+    }
+    col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0; // dither away banding
+    gl_FragColor = vec4(col, 1.0);
+    #include <colorspace_fragment>
+  }`;
+
+// Moon / sun: limb darkening plus faint mottled maria for the moon (`craters` 0 = a plain sun disc).
+function celestialMaterial(color, craters) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(color) }, uNoise: { value: noiseTexture() }, uCraters: { value: craters } },
+    vertexShader: 'varying vec3 vN; varying vec2 vUv; void main(){ vUv = uv; vN = normalMatrix * normal; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `uniform vec3 uColor; uniform sampler2D uNoise; uniform float uCraters; varying vec3 vN; varying vec2 vUv;
+      void main() {
+        float limb = pow(max(normalize(vN).z, 0.0), 0.4);
+        float n = texture2D(uNoise, vUv * vec2(2.0, 1.0)).r, m = texture2D(uNoise, vUv * vec2(6.0, 3.0) + 0.3).r;
+        float maria = mix(1.0, 0.72 + 0.28 * smoothstep(0.35, 0.65, n) * (0.9 + 0.1 * m), uCraters);
+        gl_FragColor = vec4(uColor * maria * mix(0.72, 1.0, limb), 1.0);
+        #include <colorspace_fragment>
+      }`,
+    fog: false,
+  });
 }
 
 // A drifting sheet of low mist that follows the player; enemies wade through it.
@@ -259,9 +452,9 @@ function toonify(group) {
     if (!m || !m.isMeshLambertMaterial) return;
     let t = cache.get(m);
     if (!t) {
-      t = new THREE.MeshToonMaterial({ gradientMap: RAMP, color: m.color, map: m.map, emissive: m.emissive, emissiveMap: m.emissiveMap,
-        emissiveIntensity: m.emissiveIntensity, vertexColors: m.vertexColors, flatShading: m.flatShading, side: m.side,
-        transparent: m.transparent, opacity: m.opacity });
+      t = bakeProps(new THREE.MeshToonMaterial({ gradientMap: RAMP, color: m.color, map: m.map, emissive: m.emissive, emissiveMap: m.emissiveMap,
+        emissiveIntensity: m.emissiveIntensity, vertexColors: m.vertexColors, side: m.side,
+        transparent: m.transparent, opacity: m.opacity }), !!o.userData.bakeGround);
       cache.set(m, t);
       m.dispose();
     }
@@ -309,16 +502,21 @@ export class World {
     scene.fog = new THREE.FogExp2(level.fog.color, level.fog.density);
     scene.background = null;
 
-    const sky = this.sky = new THREE.Mesh(new THREE.SphereGeometry(280, 32, 16), new THREE.ShaderMaterial({
-      uniforms: { uTop: { value: new THREE.Color(level.sky.top) }, uHorizon: { value: new THREE.Color(level.sky.horizon) } },
-      vertexShader: 'varying vec3 vW; void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: `uniform vec3 uTop, uHorizon; varying vec3 vW;
-        void main(){ float h = normalize(vW).y; gl_FragColor = vec4(mix(uHorizon, uTop, smoothstep(-0.02, 0.45, h)), 1.0);
-        #include <colorspace_fragment> }`,
+    // Everything at "infinity" (sky dome, moon/sun, clouds) rides in skyGroup, which follows the camera each frame.
+    const skyGroup = this.skyGroup = new THREE.Group();
+    g.add(skyGroup);
+    const neb = level.nebula ?? {};
+    const sky = this.sky = new THREE.Mesh(new THREE.SphereGeometry(280, 48, 24), new THREE.ShaderMaterial({
+      uniforms: { uTop: { value: new THREE.Color(level.sky.top) }, uHorizon: { value: new THREE.Color(level.sky.horizon) },
+        uStars: { value: level.stars ? 1 : 0 }, uTime: fxTime, uNoise: { value: noiseTexture() },
+        uNebulaA: { value: new THREE.Color(neb.a ?? 0x5a2a8a) }, uNebulaB: { value: new THREE.Color(neb.b ?? 0x1f4a8f) },
+        uNebula: { value: neb.strength ?? 0.4 } },
+      vertexShader: 'varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: SKY_FRAG,
       side: THREE.BackSide, depthWrite: false, fog: false,
     }));
-    sky.renderOrder = -2; sky.frustumCulled = false;
-    g.add(sky);
+    sky.renderOrder = 50; sky.frustumCulled = false; // after opaques: early-z culls the sky behind the ground
+    skyGroup.add(sky);
 
     this.hemi = new THREE.HemisphereLight(level.hemi.sky, level.hemi.ground, level.hemi.intensity);
     g.add(this.hemi);
@@ -327,32 +525,20 @@ export class World {
     g.add(key);
     if (level.rim) { const rim = new THREE.DirectionalLight(level.rim.color, level.rim.intensity); rim.position.set(...level.rim.position); g.add(rim); }
 
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), macroVariation(new THREE.MeshLambertMaterial({ map: level.ground() }), level.groundVariation ?? 0.35));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), groundMaterial(level));
     ground.rotation.x = -Math.PI / 2;
     ground.userData.keepMaterial = true;
     g.add(ground);
 
     if (level.celestial) {
       const c = level.celestial;
-      const body = new THREE.Mesh(new THREE.SphereGeometry(c.radius, 24, 16), new THREE.MeshBasicMaterial({ color: c.color, fog: false }));
+      const body = new THREE.Mesh(new THREE.SphereGeometry(c.radius, 32, 20), celestialMaterial(c.color, level.stars ? 1 : 0));
       body.position.set(...c.position);
+      body.userData.keepMaterial = true;
       const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: c.glow, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, opacity: c.glowOpacity ?? 0.9 }));
       halo.position.copy(body.position); halo.scale.setScalar(c.glowSize);
-      g.add(body, halo);
+      skyGroup.add(body, halo);
       this.celestial = { body, halo, base: body.position.clone() };
-    }
-
-    if (level.stars || level.dayCycle) {
-      const N = 1500, pos = new Float32Array(N * 3), v = new THREE.Vector3();
-      for (let i = 0; i < N; i++) {
-        v.randomDirection(); if (v.y < 0.05) v.y = -v.y + 0.05; v.multiplyScalar(250);
-        pos[i * 3] = v.x; pos[i * 3 + 1] = v.y; pos[i * 3 + 2] = v.z;
-      }
-      const sg = new THREE.BufferGeometry();
-      sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      const stars = this.stars = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 1.1, fog: false, transparent: true, opacity: level.stars ? 0.9 : 0 }));
-      stars.renderOrder = -1;
-      g.add(stars);
     }
 
     this.clouds = [];
@@ -362,11 +548,20 @@ export class World {
       const a = rand(0, Math.PI * 2), r = rand(120, 230);
       s.position.set(Math.cos(a) * r, rand(45, 95), Math.sin(a) * r);
       s.scale.set(rand(70, 120), rand(30, 50), 1);
-      g.add(s);
+      skyGroup.add(s);
       this.clouds.push(s);
     }
 
-    this.ambient = level.build(g, this.colliders) || null;
+    const bake = this.bake = new LightBake();
+    this.ambient = level.build(g, this.colliders, bake) || null;
+    for (const c of this.colliders.all) { // colliders that declared a height cast baked shadows too
+      if (!c.h) continue;
+      if (c.x1 !== undefined) bake.segment(c.x1, c.z1, c.x2, c.z2, c.r, c.h, c.k ?? 1);
+      else bake.circle(c.x, c.z, c.r, c.h, c.k ?? 1);
+    }
+    bakeUniforms.uBake.value = bake.build(level.key.position, level.bake);
+    bakeUniforms.uBakeLight.value = level.dayCycle ? 0 : 1;
+    bakeUniforms.uBakeShadow.value = 1;
     toonify(g);
     // Top-down cutaway: tall scenery (city towers, castle arches) is clipped above `topdownClip` metres so it never
     // hides the player from the overhead camera. Inactive (constant far away) in first-person / VR.
@@ -388,7 +583,7 @@ export class World {
     this.clipPlane.constant = on && this.level.topdownClip ? this.level.topdownClip : 1e6;
     this.fogScale = on ? 0.45 : 1;
     if (!this.level.dayCycle) this.scene.fog.density = this.level.fog.density * this.fogScale;
-    if (this.groundFog) this.groundFog.mesh.material.uniforms.uOpacity.value = this.level.groundFog.opacity * (on ? 0.35 : 1);
+    if (this.groundFog) this.groundFog.mesh.material.uniforms.uOpacity.value = this.level.groundFog.opacity * (on ? 0.15 : 1);
   }
 
   // Day → sunset → night for levels with a `dayCycle` (u = 0..1). Lerps sky, fog, lights, sun height and stars.
@@ -412,13 +607,16 @@ export class World {
       c.body.visible = c.halo.visible = y > -10;
       this.key.position.set(c.base.x, Math.max(8, y), c.base.z);
     }
-    if (this.stars) this.stars.material.opacity = f('stars');
+    this.sky.material.uniforms.uStars.value = f('stars');
     if (A.clouds !== undefined) lerpHex(this.cloudMat.color, A.clouds, B.clouds, t);
     this.playerLightNow = f('playerLight');
+    bakeUniforms.uBakeLight.value = Math.min(1, this.playerLightNow / 12);       // windows light up as night falls
+    bakeUniforms.uBakeShadow.value = 0.35 + 0.65 * Math.min(1, f('key') / keys[0].key); // sun shadows fade with the sun
     if (this.groundFog) this.groundFog.mesh.material.uniforms.uColor.value.copy(this.scene.fog.color);
   }
 
-  update(dt, time, playerPos) {
+  update(dt, time, playerPos, camPos = playerPos) {
+    this.skyGroup.position.set(camPos.x, 0, camPos.z);
     for (const c of this.clouds) {
       c.position.x += dt * 1.2;
       if (c.position.x > 260) c.position.x = -260;
@@ -440,7 +638,11 @@ export class World {
     return thunder;
   }
 
+  // Light probe for creatures: albedo multiplier from the bake at (x, z).
+  probe(x, z, out) { return this.bake.probe(x, z, out, bakeUniforms.uBakeShadow.value, bakeUniforms.uBakeLight.value); }
+
   dispose() {
+    this.bake.texture?.dispose();
     this.scene.remove(this.group);
     this.group.traverse((o) => {
       o.geometry?.dispose?.();

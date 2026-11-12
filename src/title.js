@@ -1,6 +1,9 @@
 // Console-style front end for desktop: a "press any button" splash, then a vertical main menu driven by
 // keyboard (arrows/WASD, Enter, Esc), mouse, or gamepad (D-pad/stick, A, B). Sub-screens swap in place.
 // The in-headset menu is separate (menu.js); this one only exists in the 2D page.
+import { meta, UPGRADES, upgradeCost, rank, buyUpgrade, refundAll, saveMeta } from './meta.js';
+import { iconURL } from './icons.js';
+import { fmtTime } from './utils.js';
 
 const LEVEL_META = {
   graveyard: { icon: '🪦', tags: ['Night', 'Survival', '25 waves'], bg: 'linear-gradient(150deg, #3a2466 0%, #150c26 55%, #07040d 100%)' },
@@ -37,6 +40,9 @@ const HOWTO = `
     <li><i style="background:#ffd166"></i><b>Chests</b> Golden beams mark treasure — walk in for a free upgrade.</li>
     <li><i style="background:#c77dff"></i><b>Evolutions</b> Max a weapon while owning its paired passive.</li>
     <li><i style="background:#ff4d6d"></i><b>Bosses</b> Waves 4, 8, 12, 17 and 25. Slay the Vampire Lord.</li>
+    <li><i style="background:#7fd8ff"></i><b>Relics</b> Magnet pulls every gem, Holy Bomb smites the horde, Hourglass freezes time.</li>
+    <li><i style="background:#ffd34d"></i><b>Gold</b> Spend it in the Crypt on permanent upgrades, including a second life.</li>
+    <li><i style="background:#9fe8ff"></i><b>Build</b> Six weapon and six passive slots. Every new pick is a commitment.</li>
   </ul>`;
 
 export class TitleScreen {
@@ -62,7 +68,7 @@ export class TitleScreen {
         </div>
         <aside class="t-level"></aside>
       </div>
-      <footer class="t-bar"><span class="t-hints"></span><span class="t-ver">v2.0 · WebXR</span></footer>`;
+      <footer class="t-bar"><span class="t-hints"></span><span class="t-ver"></span></footer>`;
     this.menuEl = this.el.querySelector('.t-menu');
     this.panelEl = this.el.querySelector('.t-panel');
     this.levelEl = this.el.querySelector('.t-level');
@@ -123,13 +129,28 @@ export class TitleScreen {
       { label: 'Comfort Vignette', value: onOff(s.vignette), cycle: () => this.onSetting('vignette', !s.vignette) },
       { label: 'Music', value: onOff(s.music), cycle: () => this.onSetting('music', !s.music) },
       { label: 'VR HUD', value: s.hud === 'wrist' ? 'Wrist' : 'Fixed', cycle: () => this.onSetting('hud', s.hud === 'wrist' ? 'camera' : 'wrist') },
-      { label: 'Back', back: true, act: () => this.go('main', 5) },
+      { label: 'Damage Numbers', value: onOff(s.numbers !== false), cycle: () => this.onSetting('numbers', s.numbers === false) },
+      { label: 'Screen Shake', value: onOff(s.shake !== false), cycle: () => this.onSetting('shake', s.shake === false) },
+      { label: 'Back', back: true, act: () => this.go('main', 6) },
     ];
-    if (this.screen === 'howto') return [{ label: 'Back', back: true, act: () => this.go('main', 4) }];
+    if (this.screen === 'howto') return [{ label: 'Back', back: true, act: () => this.go('main', 5) }];
+    if (this.screen === 'shop') return [
+      ...UPGRADES.map((u) => {
+        const r = rank(u.id), max = r >= u.max, c = upgradeCost(u, r);
+        return { label: u.title, upgrade: u, value: max ? 'MAXED' : `◆ ${c}`, note: `Rank ${r}/${u.max} · ${u.desc}`, poor: !max && meta.gold < c,
+          act: () => {
+            if (buyUpgrade(u.id)) { saveMeta(); this.sfx.buy(); } else this.sfx.deny();
+            this.render();
+          } };
+      }),
+      { label: 'Refund All', note: 'Get every coin back and rebuild your perks.', act: () => { refundAll(); saveMeta(); this.backSound(); this.render(); } },
+      { label: 'Back', back: true, act: () => this.go('main', 3) },
+    ];
     return [
       { label: 'Play', big: true, act: () => { this.confirmSound(); this.onPlay(); } },
       { label: 'Battlefield', value: L.name, cycle: (d) => this.cycleLevel(d) },
       { label: 'View', value: s.view === 'topdown' ? 'Top-Down' : 'First Person', cycle: () => this.onSetting('view', s.view === 'topdown' ? 'fps' : 'topdown') },
+      { label: 'Crypt', value: `◆ ${meta.gold}`, note: 'Spend gold on permanent upgrades', act: () => this.go('shop') },
       { label: 'Enter VR', disabled: !this.vr.ok, note: this.vr.ok ? '' : this.vr.reason, act: () => { this.confirmSound(); this.onEnterVR(); } },
       { label: 'How to Play', act: () => this.go('howto') },
       { label: 'Settings', act: () => this.go('settings') },
@@ -203,13 +224,13 @@ export class TitleScreen {
       return;
     }
     const items = this.items();
-    this.headingEl.textContent = { main: '', settings: 'Settings', howto: 'How to Play' }[this.screen];
+    this.headingEl.textContent = { main: '', settings: 'Settings', howto: 'How to Play', shop: 'The Crypt' }[this.screen];
     this.menuEl.innerHTML = '';
     items.forEach((it, i) => {
       const b = document.createElement('button');
-      b.className = `t-item${i === this.sel ? ' on' : ''}${it.disabled ? ' off' : ''}${it.big ? ' big' : ''}${it.back ? ' back' : ''}`;
+      b.className = `t-item${i === this.sel ? ' on' : ''}${it.disabled ? ' off' : ''}${it.big ? ' big' : ''}${it.back ? ' back' : ''}${it.poor ? ' poor' : ''}${it.upgrade ? ' shop' : ''}`;
       b.innerHTML = `<span class="t-label">${it.label}</span>` +
-        (it.value !== undefined ? `<span class="t-value"><em class="t-arrow" data-d="-1">‹</em>${it.value}<em class="t-arrow" data-d="1">›</em></span>` : '') +
+        (it.value !== undefined ? `<span class="t-value">${it.cycle ? '<em class="t-arrow" data-d="-1">‹</em>' : ''}${it.value}${it.cycle ? '<em class="t-arrow" data-d="1">›</em>' : ''}</span>` : '') +
         (it.note ? `<span class="t-note">${it.note}</span>` : '');
       b.onmouseenter = () => { if (!it.disabled && this.sel !== i) { this.sel = i; this.moveSound(); this.render(); } };
       b.onclick = (e) => {
@@ -221,14 +242,32 @@ export class TitleScreen {
       this.menuEl.appendChild(b);
     });
     this.panelEl.innerHTML = this.screen === 'howto' ? HOWTO : '';
-    const L = this.levels.find((l) => l.id === this.settings.level) || this.levels[0], meta = LEVEL_META[L.id] || LEVEL_META.graveyard;
-    this.levelEl.innerHTML = this.screen === 'howto' ? '' : `
-      <div class="t-lv-art" style="background:${meta.bg}"><span>${meta.icon}</span></div>
+    this.el.querySelector('.t-ver').innerHTML = `<b class="t-gold">◆ ${meta.gold}</b> gold · v3.0 · WebXR`;
+    const L = this.levels.find((l) => l.id === this.settings.level) || this.levels[0], lm = LEVEL_META[L.id] || LEVEL_META.graveyard;
+    const rec = meta.records[L.id];
+    const recLine = rec && rec.time ? `<div class="t-lv-rec"><b>Best</b> ${fmtTime(rec.time)} · ${L.id === 'castle' ? `Chamber ${rec.wave}` : `Wave ${rec.wave}`} · ${rec.kills.toLocaleString()} kills · Lv ${rec.level}${rec.wins ? ` · ${rec.wins} win${rec.wins > 1 ? 's' : ''}` : ''}</div>` : '';
+    if (this.screen === 'shop') {
+      const u = items[this.sel]?.upgrade;
+      if (u) {
+        const r = rank(u.id), c = upgradeCost(u, r);
+        const pips = Array.from({ length: u.max }, (_, i) => `<i class="${i < r ? 'on' : ''}"></i>`).join('');
+        this.levelEl.innerHTML = `<div class="t-shop">
+          <img class="t-shop-icon" src="${iconURL(u.icon, 128)}" alt="">
+          <div class="t-lv-kicker">Permanent upgrade</div>
+          <div class="t-lv-name">${u.title}</div>
+          <div class="t-pips">${pips}</div>
+          <div class="t-lv-desc">${u.desc}</div>
+          <div class="t-shop-cost">${r >= u.max ? 'Fully upgraded' : `Next rank: <b>◆ ${c}</b> · you have <b>◆ ${meta.gold}</b>`}</div>
+        </div>`;
+      } else this.levelEl.innerHTML = `<div class="t-shop"><div class="t-lv-kicker">The Crypt</div><div class="t-lv-desc">Gold you pick up during a run is banked when it ends: coins, gold bags from elites and bosses, chests, and a bonus for every wave survived.</div></div>`;
+    } else this.levelEl.innerHTML = this.screen === 'howto' ? '' : `
+      <div class="t-lv-art" style="background:${lm.bg}"><span>${lm.icon}</span></div>
       <div class="t-lv-body">
         <div class="t-lv-kicker">Battlefield</div>
         <div class="t-lv-name">${L.name}</div>
         <div class="t-lv-desc">${L.desc}</div>
-        <div class="t-lv-tags">${meta.tags.map((t) => `<span>${t}</span>`).join('')}<span class="t-lv-view">${this.settings.view === 'topdown' ? 'Top-Down · huge hordes' : 'First Person'}</span></div>
+        <div class="t-lv-tags">${lm.tags.map((t) => `<span>${t}</span>`).join('')}<span class="t-lv-view">${this.settings.view === 'topdown' ? 'Top-Down · huge hordes' : 'First Person'}</span></div>
+        ${recLine}
       </div>`;
     const it = items[this.sel];
     el.querySelector('.t-hints').innerHTML =

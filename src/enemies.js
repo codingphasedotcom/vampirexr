@@ -5,16 +5,16 @@ import { loadVATModel, vatMaterial, loadStaticModel } from './models.js';
 
 // `y` is the model's visual centre (used for particles / damage numbers); models stand on y = 0.
 export const ENEMY_TYPES = {
-  bat:    { hp: 6,   speed: 3.2, dmg: 3,  size: 0.45, y: 1.35, color: 0x9b5de5, xp: 1, fly: true,
+  bat:    { hp: 6,   speed: 3.2, dmg: 3,  size: 0.45, y: 1.35, color: 0x9b5de5, xp: 1, fly: true, blood: 0x4a1660,
             build: batGeometry, anim: ['FLAP'],
             model: { url: '/models/bat.glb', height: 0.5, lift: 1.1, yaw: 0, animated: false } },
-  ghoul:  { hp: 22,  speed: 2.1, dmg: 6,  size: 0.8,  y: 1.0,  color: 0x7fd36a, xp: 2,
+  ghoul:  { hp: 22,  speed: 2.1, dmg: 6,  size: 0.8,  y: 1.0,  color: 0x7fd36a, xp: 2, blood: 0x34601c,
             build: ghoulGeometry, anim: ['SHAMBLE', { speed: 7, hip: 0.55 }],
             model: { url: '/models/ghoul.glb', height: 1.7, yaw: 0, rate: 1.8 } },
-  wraith: { hp: 40,  speed: 2.8, dmg: 9,  size: 0.9,  y: 1.3,  color: 0x7ff3ff, xp: 4, fly: true,
+  wraith: { hp: 40,  speed: 2.8, dmg: 9,  size: 0.9,  y: 1.3,  color: 0x7ff3ff, xp: 4, fly: true, blood: 0x2a8a9a,
             build: wraithGeometry, anim: ['WAVE'],
             model: { url: '/models/wraith.glb', height: 1.9, lift: 0.25, yaw: 0, animated: false } },
-  brute:  { hp: 130, speed: 1.4, dmg: 16, size: 1.5,  y: 1.4,  color: 0xff4d5a, xp: 8,
+  brute:  { hp: 130, speed: 1.4, dmg: 16, size: 1.5,  y: 1.4,  color: 0xff4d5a, xp: 8, blood: 0x5e0a12,
             build: bruteGeometry, anim: ['SHAMBLE', { speed: 4.5, hip: 0.6 }],
             model: { url: '/models/brute.glb', height: 2.4, yaw: 0, rate: 1.9 } },
 };
@@ -38,6 +38,8 @@ export const ROLES = {
 export const ELITE_MODS = ['swift', 'vampiric', 'regen'];
 const ELITE_TINT = new THREE.Color(1.55, 1.25, 0.5);
 const WARN = new THREE.Color(3, 0.35, 0.35);
+const ICE = new THREE.Color(0.55, 0.95, 1.6);
+const _lc = new THREE.Color();
 const CHARGE = { wind: 0.75, dash: 0.55, speed: 11, rest: 0.9, cooldown: 2.6, range: 10 };
 const cellKey = (cx, cz) => (cx + 2048) * 4096 + (cz + 2048);
 const _out = { x: 0, z: 0 };
@@ -56,6 +58,7 @@ export class EnemyManager {
     this.view = null;         // top-down: {x0,x1,z0,z1} — enemies outside aren't drawn
     this.outlines = {};       // ink-outline companions (desktop only; too many vertices for the Quest)
     this.outlinesVisible = true;
+    this.probe = null;        // (x, z, outColor) → baked-light multiplier (World.probe); creatures darken in shadow, glow under lamps
     for (const [name, t] of Object.entries(ENEMY_TYPES)) {
       const geo = t.build();
       const phase = new THREE.InstancedBufferAttribute(new Float32Array(MAX[name]), 1).setUsage(THREE.DynamicDrawUsage);
@@ -312,7 +315,9 @@ export class EnemyManager {
       const k = KINDS[e.kind];
       let dmgK = 1;
       e.warn = Math.max(0, e.warn - dt * 3);
-      if (!e.t.boss) {
+      const frozen = e.frozenUntil > time; // Frost Nova / hourglass: no movement, attacks or contact damage
+      if (frozen) { e.kx = 0; e.kz = 0; }
+      if (!e.t.boss && !frozen) {
         if (e.mod === 'regen') e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.03 * dt);
         if (e.role === 'charger' && this.chargerStep(e, dt, d, dx, dz)) dmgK = 1.8;
         else if (e.role === 'bomber') {
@@ -328,7 +333,7 @@ export class EnemyManager {
           if (e.shootT <= 0 && shoot) { e.shootT = k.cooldown; shoot(e, k); }
         } else if (d > stop) this.approach(e, dt, d, dx, dz, stop, e.speed);
       }
-      if (d < stop + 0.3 && !e.dead) {
+      if (d < stop + 0.3 && !e.dead && !frozen) {
         const c = e.t.dmg * (e.dmgMul || 1) * dmgK * dt;
         contact += c;
         if (e.mod === 'vampiric') e.hp = Math.min(e.maxHp, e.hp + c * 4);
@@ -363,7 +368,8 @@ export class EnemyManager {
     const idx = {};
     for (const n in this.meshes) idx[n] = 0;
     const draw = (e, dying) => {
-      const walkTime = dying ? (e.walkTime ?? 0) : advanceWalk(e, dt);
+      const frozen = e.frozenUntil > time;
+      const walkTime = dying ? (e.walkTime ?? 0) : advanceWalk(e, frozen ? 0 : dt);
       e.age += dt;
       // spawn: pop up out of the ground with a little overshoot; death: flash, swell, then crumple and sink
       const rise = Math.min(1, e.age / 0.45);
@@ -386,7 +392,9 @@ export class EnemyManager {
         e.mesh.rotation.set(tilt * 0.4, yaw, 0, 'YXZ');
         e.mesh.scale.setScalar(scale);
         const white = Math.min(1, e.flash * 0.8 + (dying ? 1 - e.dieT / e.dieMax : 0)), red = e.warn * (0.35 + 0.25 * Math.sin(time * 18));
-        e.mesh.material.emissive.setRGB(white + red, white + red * 0.12, white + red * 0.1);
+        const ice = frozen ? 0.35 : 0;
+        e.mesh.material.emissive.setRGB(white + red + ice * 0.3, white + red * 0.12 + ice * 0.7, white + red * 0.1 + ice);
+        if (this.probe) this.probe(e.x, e.z, e.mesh.material.color); // baked light / shadow
         if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);
         return;
       }
@@ -401,7 +409,10 @@ export class EnemyManager {
       dummy.scale.setScalar(e.scale * scale * (1 + e.flash * 0.12));
       dummy.updateMatrix();
       m.setMatrixAt(i, dummy.matrix);
-      m.setColorAt(i, _c.copy(e.tint).multiplyScalar(glow).lerp(WARN, e.warn * 0.7));
+      _c.copy(e.tint).multiplyScalar(glow).lerp(WARN, e.warn * 0.7);
+      if (frozen) _c.lerp(ICE, 0.7);
+      if (this.probe) _c.multiply(this.probe(e.x, e.z, _lc));
+      m.setColorAt(i, _c);
       this.phases[e.type].array[i] = e.phase;
       this.walkTimes[e.type].array[i] = walkTime;
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 7);

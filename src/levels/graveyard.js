@@ -5,29 +5,57 @@ import { scatter, tileTexture, Drifters, Flames, _d } from '../world.js';
 
 const HORIZON = 0x1c1230;
 
+// Irregular cobbles: offset rows of varied stones with mossy joints (reads as a path, not floor tiles).
 function groundTexture() {
   return tileTexture(512, 125, (g, S) => {
-    g.fillStyle = '#2a2233'; g.fillRect(0, 0, S, S);
-    const N = 8, cell = S / N;
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-      if (Math.random() < 0.2) {
-        g.strokeStyle = '#3c5a38'; g.lineWidth = 2;
-        for (let k = 0; k < 6; k++) {
-          const bx = x * cell + rand(10, cell - 10), by = y * cell + rand(10, cell - 10);
-          g.beginPath(); g.moveTo(bx, by); g.lineTo(bx + rand(-6, 6), by - rand(6, 14)); g.stroke();
+    g.fillStyle = '#1d1824'; g.fillRect(0, 0, S, S);
+    const rows = 9, rh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      let x = (r % 2) * rand(10, 30) - 30;
+      while (x < S) {
+        const w = rand(34, 70), y = r * rh, l = rand(0, 1), m = rand(3, 6);
+        const shade = (v) => Math.round(v + l * 22);
+        g.fillStyle = `rgb(${shade(48)}, ${shade(43)}, ${shade(60)})`;
+        for (const ox of [0, x + w > S ? -S : null]) {
+          if (ox === null) continue;
+          g.beginPath(); g.roundRect(x + m + ox, y + m + rand(-2, 2), w - m * 2, rh - m * 2, rand(6, 12)); g.fill();
+          g.strokeStyle = 'rgba(0,0,0,0.4)'; g.lineWidth = 3; g.stroke();
+          g.fillStyle = 'rgba(255,255,255,0.07)'; g.fillRect(x + m + 4 + ox, y + m + 3, w - m * 2 - 8, 4);
+          g.fillStyle = `rgb(${shade(48)}, ${shade(43)}, ${shade(60)})`;
         }
-        continue;
+        x += w;
       }
-      const m = rand(4, 9), w = cell - m * 2 - rand(0, 8), h = cell - m * 2 - rand(0, 8);
-      const px = x * cell + m + rand(0, 4), py = y * cell + m + rand(0, 4), l = rand(0, 1);
-      g.fillStyle = `rgb(${Math.round(52 + l * 20)}, ${Math.round(46 + l * 16)}, ${Math.round(66 + l * 22)})`;
-      g.beginPath(); g.roundRect(px, py, w, h, 6); g.fill();
-      g.strokeStyle = 'rgba(0,0,0,0.45)'; g.lineWidth = 3; g.stroke();
-      g.fillStyle = 'rgba(255,255,255,0.06)'; g.fillRect(px + 3, py + 3, w - 6, 4);
-      if (Math.random() < 0.3) {
-        g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 1.5;
-        g.beginPath(); g.moveTo(px + rand(4, w - 4), py + 4); g.lineTo(px + rand(4, w - 4), py + h / 2); g.lineTo(px + rand(4, w - 4), py + h - 4); g.stroke();
-      }
+    }
+    g.lineWidth = 2;
+    for (let i = 0; i < 500; i++) { // moss and weeds in the joints
+      const x = rand(0, S), y = Math.floor(rand(0, rows)) * rh + rand(-3, 3);
+      g.strokeStyle = `rgba(${Math.round(rand(50, 80))},${Math.round(rand(85, 120))},${Math.round(rand(50, 70))},0.55)`;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-4, 4), y - rand(3, 8)); g.stroke();
+    }
+  });
+}
+
+// Second ground surface blended in patches: dark mossy earth with grass tufts and pebbles.
+function earthTexture() {
+  return tileTexture(512, 125, (g, S) => {
+    g.fillStyle = '#241e2b'; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 70; i++) {
+      const x = rand(0, S), y = rand(0, S), r = rand(20, 80), grad = g.createRadialGradient(x, y, 0, x, y, r);
+      grad.addColorStop(0, Math.random() < 0.5 ? 'rgba(52,70,44,0.45)' : 'rgba(18,12,24,0.5)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    g.lineWidth = 2;
+    for (let i = 0; i < 1300; i++) {
+      const x = rand(0, S), y = rand(0, S), l = rand(4, 10);
+      g.strokeStyle = `rgba(${Math.round(rand(50, 85))},${Math.round(rand(75, 115))},${Math.round(rand(55, 80))},${rand(0.35, 0.7).toFixed(2)})`;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-3, 3), y - l); g.stroke();
+    }
+    for (let i = 0; i < 110; i++) {
+      const x = rand(0, S), y = rand(0, S), r = rand(2, 5);
+      g.fillStyle = `rgb(${Math.round(rand(60, 85))},${Math.round(rand(55, 75))},${Math.round(rand(75, 100))})`;
+      g.beginPath(); g.ellipse(x, y, r * 1.3, r, rand(0, 3), 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.12)'; g.beginPath(); g.ellipse(x - r * 0.3, y - r * 0.3, r * 0.5, r * 0.35, 0, 0, Math.PI * 2); g.fill();
     }
   });
 }
@@ -72,7 +100,7 @@ export function fenceRuns(group, colliders, material, runs, rMin, rMax) {
       _d.rotation.set(0, -dir, 0); _d.scale.setScalar(1);
       _d.updateMatrix();
       fence.setMatrixAt(fi++, _d.matrix);
-      colliders.add({ x1: _d.position.x - Math.cos(dir), z1: _d.position.z - Math.sin(dir), x2: _d.position.x + Math.cos(dir), z2: _d.position.z + Math.sin(dir), r: 0.12 });
+      colliders.add({ x1: _d.position.x - Math.cos(dir), z1: _d.position.z - Math.sin(dir), x2: _d.position.x + Math.cos(dir), z2: _d.position.z + Math.sin(dir), r: 0.12, h: 1.3, k: 0.35 });
     }
   }
   fence.count = fi;
@@ -101,23 +129,26 @@ export const graveyard = {
   playerLight: 14,
   groundFog: { color: 0x6a5a9a, opacity: 0.42, height: 0.35 },
   rimLight: { color: 0xa9b8ff, strength: 0.75 },
+  bake: { shadow: 0.62, maxLen: 13 },
+  nebula: { a: 0x6a2a9a, b: 0x1f4f9f, strength: 0.55 },
   ground: groundTexture,
-  build(group, col) {
+  groundAlt: earthTexture, groundAltMask: [0.36, 0.54],
+  build(group, col, bake) {
     const stone = new THREE.MeshLambertMaterial({ color: 0x4a4458 });
     const iron = new THREE.MeshLambertMaterial({ color: 0x1a1a24 });
     const wood = new THREE.MeshLambertMaterial({ color: 0x1e1722 });
     group.add(scatter(new THREE.InstancedMesh(tombGeometry(), stone, 140), 140, 7, 85, (d) => {
       d.rotation.set(rand(-0.15, 0.15), rand(0, Math.PI * 2), rand(-0.12, 0.12)); d.scale.setScalar(rand(0.8, 1.5));
-    }, col, (d) => 0.3 * d.scale.x));
+    }, col, (d) => 0.3 * d.scale.x, (d) => 0.85 * d.scale.y));
     group.add(scatter(new THREE.InstancedMesh(crossGeometry(), stone, 60), 60, 7, 85, (d) => {
       d.rotation.set(rand(-0.2, 0.2), rand(0, Math.PI * 2), rand(-0.15, 0.15)); d.scale.setScalar(rand(0.8, 1.3));
-    }, col, (d) => 0.18 * d.scale.x));
+    }, col, (d) => 0.18 * d.scale.x, (d) => 1.2 * d.scale.y, 0.8));
     group.add(scatter(new THREE.InstancedMesh(deadTreeGeometry(), wood, 45), 45, 12, 88, (d) => {
       d.rotation.set(rand(-0.08, 0.08), rand(0, Math.PI * 2), rand(-0.08, 0.08)); d.scale.setScalar(rand(0.9, 1.8));
-    }, col, (d) => 0.32 * d.scale.x));
+    }, col, (d) => 0.32 * d.scale.x, (d) => 3.4 * d.scale.y, 0.6));
     group.add(scatter(new THREE.InstancedMesh(new THREE.CylinderGeometry(0.35, 0.5, 4, 8).translate(0, 2, 0), stone, 28), 28, 10, 80, (d) => {
       d.rotation.set(rand(-0.05, 0.05), rand(0, Math.PI * 2), rand(-0.05, 0.05)); d.scale.set(1, rand(0.4, 1.2), 1);
-    }, col, () => 0.5));
+    }, col, () => 0.5, (d) => 4 * d.scale.y));
     fenceRuns(group, col, iron, 14, 10, 80);
     // stone braziers with flickering fire mark out the arena; glows only, no real lights
     const fires = [];
@@ -128,8 +159,9 @@ export const graveyard = {
       const a = (i / 18) * Math.PI * 2 + rand(-0.12, 0.12), r = i % 2 ? rand(9, 16) : rand(24, 40);
       _d.position.set(Math.cos(a) * r, 0, Math.sin(a) * r); _d.rotation.set(0, rand(0, 6), 0); _d.scale.setScalar(1); _d.updateMatrix();
       pedestal.setMatrixAt(i, _d.matrix); bowl.setMatrixAt(i, _d.matrix); coals.setMatrixAt(i, _d.matrix);
-      col.add({ x: _d.position.x, z: _d.position.z, r: 0.5 });
+      col.add({ x: _d.position.x, z: _d.position.z, r: 0.5, h: 1.5 });
       fires.push(new THREE.Vector3(_d.position.x, 1.55, _d.position.z));
+      bake.light(_d.position.x, _d.position.z, 8.5, 0xff8a3a, 0.95); // braziers pool warm light on the cobbles
     }
     group.add(pedestal, bowl, coals);
     const flames = new Flames(group, fires, { color: 0xff7a22, size: 1.5 });

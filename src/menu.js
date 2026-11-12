@@ -1,25 +1,66 @@
 import * as THREE from 'three';
 import { makeCanvas, wrapText, roundRect } from './utils.js';
+import { drawIcon } from './icons.js';
 
 const _center = new THREE.Vector2(0, 0);
 const _m = new THREE.Matrix4();
 const _pos = new THREE.Vector3(), _q = new THREE.Quaternion(), _fwd = new THREE.Vector3();
-const FONT = 'system-ui, sans-serif';
+const FONT = 'Inter, system-ui, sans-serif';
 
+const ACCENT = { weapon: '#ff4d6d', passive: '#4dd0ff', evolve: '#c77dff', stats: '#9a93ad', bonus: '#ffd166', shop: '#ffd166' };
+const KIND_ICON = { stats: 'skull', bonus: 'star', evolve: 'star', weapon: 'gun', passive: 'might', shop: 'gold' };
+
+// Card face: kind ribbon, glowing icon, title, level pips, description and an evolution hint.
 function cardTexture(item, hint) {
-  const c = makeCanvas(256, 352), g = c.getContext('2d');
-  const accent = { weapon: '#ff4d6d', passive: '#4dd0ff', evolve: '#c77dff', stats: '#9a93ad' }[item.kind] || '#ffd166';
-  g.fillStyle = item.kind === 'evolve' ? '#241034' : '#17121f'; roundRect(g, 0, 0, 256, 352, 18); g.fill();
-  g.strokeStyle = accent; g.lineWidth = 6; roundRect(g, 4, 4, 248, 344, 16); g.stroke();
-  g.textAlign = 'center';
-  g.fillStyle = accent; g.font = `bold 22px ${FONT}`; g.fillText(item.sub || '', 128, 48);
-  g.fillStyle = '#fff'; g.font = `bold 28px ${FONT}`;
-  const y = wrapText(g, item.title, 128, 96, 220, 32);
-  g.fillStyle = '#c9c4d6'; g.font = item.kind === 'stats' ? `17px ${FONT}` : `20px ${FONT}`;
-  wrapText(g, item.desc, 128, y + 18, 218, item.kind === 'stats' ? 22 : 26);
-  if (hint) { g.fillStyle = '#777'; g.font = `18px ${FONT}`; g.fillText(hint, 128, 330); }
+  const W = 320, H = 440, c = makeCanvas(W, H), g = c.getContext('2d');
+  const accent = ACCENT[item.kind] || '#ffd166';
+  const bg = g.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, item.kind === 'evolve' ? '#2c1240' : '#1d1528'); bg.addColorStop(1, '#0d0914');
+  g.fillStyle = bg; roundRect(g, 0, 0, W, H, 22); g.fill();
+  g.strokeStyle = accent; g.lineWidth = 6; roundRect(g, 4, 4, W - 8, H - 8, 19); g.stroke();
+  g.strokeStyle = 'rgba(255,255,255,0.08)'; g.lineWidth = 2; roundRect(g, 13, 13, W - 26, H - 26, 13); g.stroke();
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+  // kind ribbon
+  if (item.sub) {
+    g.fillStyle = accent; g.globalAlpha = 0.18; roundRect(g, 40, 24, W - 80, 32, 16); g.fill(); g.globalAlpha = 1;
+    g.fillStyle = accent; g.font = `800 17px ${FONT}`;
+    g.fillText(item.sub.toUpperCase().split('').join(String.fromCharCode(8202)), W / 2, 46);
+  }
+  const isStats = item.kind === 'stats';
+  let y;
+  if (!isStats) {
+    // icon on a soft halo
+    const cx = W / 2, cy = 122, halo = g.createRadialGradient(cx, cy, 4, cx, cy, 70);
+    halo.addColorStop(0, `${accent}66`); halo.addColorStop(1, `${accent}00`);
+    g.fillStyle = halo; g.fillRect(cx - 80, cy - 80, 160, 160);
+    if (item.kind === 'evolve') drawIcon(g, 'star', cx, cy, 120);
+    drawIcon(g, item.icon || KIND_ICON[item.kind] || 'star', cx, cy, item.kind === 'evolve' ? 72 : 92);
+    g.fillStyle = '#fff'; g.font = `800 29px ${FONT}`;
+    y = wrapText(g, item.title, W / 2, 214, W - 40, 32);
+    if (item.max) { // level pips: owned (dim), the one this card grants (bright)
+      const n = item.max, sz = 12, gap = 6, x0 = W / 2 - (n * (sz + gap) - gap) / 2;
+      for (let i = 0; i < n; i++) {
+        const px = x0 + i * (sz + gap) + sz / 2, py = y - 6;
+        g.save(); g.translate(px, py); g.rotate(Math.PI / 4);
+        g.fillStyle = i < item.level - 1 ? `${accent}aa` : i === item.level - 1 ? '#fff' : 'rgba(255,255,255,0.12)';
+        g.fillRect(-sz / 2.8, -sz / 2.8, sz / 1.4, sz / 1.4); g.restore();
+      }
+      y += 18;
+    }
+    g.fillStyle = '#d2cbe0'; g.font = `19px ${FONT}`;
+    y = wrapText(g, item.desc, W / 2, y + 6, W - 44, 25);
+  } else {
+    drawIcon(g, item.icon || 'skull', W / 2, 92, 54);
+    g.fillStyle = '#fff'; g.font = `800 27px ${FONT}`;
+    y = wrapText(g, item.title, W / 2, 152, W - 40, 30);
+    g.fillStyle = '#d2cbe0'; g.font = `17px ${FONT}`;
+    y = wrapText(g, item.desc, W / 2, y + 4, W - 36, 23);
+  }
+  if (item.hint) { g.fillStyle = accent; g.font = `italic 600 16px ${FONT}`; wrapText(g, item.hint, W / 2, H - 52, W - 40, 19); }
+  if (hint) { g.fillStyle = 'rgba(255,255,255,0.4)'; g.font = `700 16px ${FONT}`; g.fillText(hint, W / 2, H - 20); }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
   return t;
 }
 
@@ -27,9 +68,9 @@ function headingTexture(title, sub) {
   const c = makeCanvas(1024, 200), g = c.getContext('2d');
   g.textAlign = 'center';
   g.shadowColor = '#ff4d6d'; g.shadowBlur = 30;
-  g.fillStyle = '#ff4d6d'; g.font = `bold 96px ${FONT}`; g.fillText(title, 512, 100);
+  g.fillStyle = '#ff5d7a'; g.font = `800 92px Cinzel, Georgia, serif`; g.fillText(title, 512, 100);
   g.shadowBlur = 0;
-  g.fillStyle = '#ddd'; g.font = `36px ${FONT}`; g.fillText(sub, 512, 165);
+  g.fillStyle = '#e4dcef'; g.font = `600 34px ${FONT}`; g.fillText(sub, 512, 165);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
@@ -89,7 +130,7 @@ export class Menu {
     if (this.attachToCamera && !xr) {
       // top-down: cards ride in front of the camera (world-space placement would sit far above the view)
       this.camera.add(this.group);
-      this.group.position.set(0, 0.12, 0); this.group.rotation.set(0, 0, 0);
+      this.group.position.set(0, 0, 0); this.group.rotation.set(0, 0, 0);
       hy = 0;
     } else {
       this.scene.add(this.group);
@@ -100,21 +141,26 @@ export class Menu {
       this.group.rotation.set(0, Math.atan2(-_fwd.x, -_fwd.z), 0);
       hy = _pos.y;
     }
-    this.heading.position.set(0, hy + 0.55, -1.8);
+    this.heading.position.set(0, hy + 0.6, -1.8);
     this.logo.visible = logo; this.heading.visible = !logo;
     this.logo.position.set(0, hy + 0.85, -1.85);
     this.art.visible = art;
     this.art.position.set(0, hy + 0.1, -3.2);
 
-    const n = items.length, gap = n > 3 ? 0.62 : 0.7;
+    // one row for up to five cards; more go into two rows of smaller cards (VR shop / settings)
+    const n = items.length, rows = n > 5 ? 2 : 1, cols = Math.ceil(n / rows), sc = rows > 1 ? 0.78 : 1;
+    const gap = rows > 1 ? 0.5 : n > 3 ? 0.62 : 0.7;
+    if (rows > 1) this.heading.position.y = hy + 0.86;
     items.forEach((item, i) => {
-      const x = (i - (n - 1) / 2) * gap;
+      const row = Math.floor(i / cols), col = i % cols, inRow = row === rows - 1 ? n - cols * (rows - 1) : cols;
+      const x = (col - (inRow - 1) / 2) * gap, rowY = rows > 1 ? (row === 0 ? 0.33 : -0.33) : 0;
       const frame = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.82),
-        new THREE.MeshBasicMaterial({ color: 0xff4d6d, transparent: true, opacity: 0.25, depthTest: false }));
+        new THREE.MeshBasicMaterial({ color: ACCENT[item.kind] || '#ffd166', transparent: true, opacity: 0.25, depthTest: false }));
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.55, 0.756),
         new THREE.MeshBasicMaterial({ map: cardTexture(item, xr ? '' : `[ ${i + 1} ]`), transparent: true, depthTest: false }));
-      frame.position.set(x, hy - 0.15, -1.81); frame.renderOrder = 900;
-      mesh.position.set(x, hy - 0.15, -1.8); mesh.renderOrder = 901;
+      frame.position.set(x, hy - 0.02 + rowY, -1.81); frame.renderOrder = 900;
+      mesh.position.set(x, hy - 0.02 + rowY, -1.8); mesh.renderOrder = 901;
+      mesh.userData.baseY = hy - 0.02 + rowY; mesh.userData.sc = sc;
       this.group.add(frame, mesh);
       this.cards.push({ mesh, frame });
     });
@@ -122,6 +168,7 @@ export class Menu {
     this.group.visible = true;
     this.open = true;
     this.padIndex = -1;
+    this.t0 = performance.now();
     this.input.setLasers(true);
     this.crosshair?.classList.toggle('hidden', xr || !!this.attachToCamera);
     this.input.consumeSelect(); this.input.consumeClick(); // drop stale presses
@@ -158,11 +205,16 @@ export class Menu {
       if (nav) this.padIndex = ((this.padIndex < 0 ? (hovered >= 0 ? hovered : -1) : this.padIndex) + nav + meshes.length) % meshes.length;
       if (hovered < 0 && this.padIndex >= 0) hovered = this.padIndex;
     }
+    const age = (performance.now() - this.t0) / 1000;
     this.cards.forEach((c, i) => {
-      const h = i === hovered;
-      c.frame.material.opacity = h ? 1 : 0.25;
-      c.mesh.scale.setScalar(h ? 1.08 : 1);
-      c.frame.scale.setScalar(h ? 1.08 : 1);
+      const h = i === hovered, k = Math.min(1, Math.max(0, (age - i * 0.06) / 0.25)), e = 1 - Math.pow(1 - k, 3);
+      c.frame.material.opacity = (h ? 1 : 0.25) * e;
+      c.mesh.material.opacity = e;
+      const lift = (1 - e) * -0.12 + (h ? 0.02 : 0);
+      c.mesh.position.y = c.mesh.userData.baseY + lift; c.frame.position.y = c.mesh.userData.baseY + lift;
+      const sc = c.mesh.userData.sc ?? 1;
+      c.mesh.scale.setScalar(sc * (h ? 1.08 : 1));
+      c.frame.scale.setScalar(sc * (h ? 1.08 : 1));
     });
     const sel = this.input.consumeSelect(), click = this.input.consumeClick(), pad = this.input.consumePadSelect();
     if ((sel || click || pad) && hovered >= 0) this.pick(hovered);
