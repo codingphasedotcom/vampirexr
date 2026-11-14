@@ -24,6 +24,9 @@ WebXR needs a secure context, so `dev:vr` serves over HTTPS with a self-signed c
 
 Dash: Shift (desktop) · B (gamepad) · Grip (VR). Pause: Esc · Start · X/Y/A/B (VR).
 
+VR uses your real height. Playing sitting down? Pick **Settings → Height: Seated** (in VR, or **VR Height** on the title
+screen) to lift your view to standing eye height (1.6 m). It measures you when you pick it and again each time you enter VR.
+
 Your revolver is aimed by you; every other weapon fires on its own. Aim through the center of an enemy for **1.5× precision damage**. Impact rings confirm hits: gold for a hit, cyan for precision, pink for a kill. Collect the gems enemies drop to level up.
 25 waves, starting at 30 monsters and growing ~28% per wave (max 200 alive). Bosses on waves 4, 8, 12, 17 and 25; kill the Vampire Lord on wave 25 to win. Golden beams mark chests that give a free upgrade.
 

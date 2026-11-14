@@ -24,7 +24,7 @@ import { LEVELS, levelById } from './levels/index.js';
 import { GlowLayer, DamageNumbers, Ribbons, Decals, DECAL, fxTime } from './fx.js';
 import { rand, pick, fmtTime } from './utils.js';
 import { CastleSiege, confine } from './siege.js';
-import { settings, saveSettings } from './settings.js';
+import { settings, saveSettings, EYE_HEIGHT, seatedLift } from './settings.js';
 import { TitleScreen } from './title.js';
 import { HunterAvatar } from './avatar.js';
 import { Pickups, PICKUPS, RELICS } from './pickups.js';
@@ -97,8 +97,11 @@ export class Game {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 300);
-    this.camera.position.set(0, 1.6, 0);
-    // The rig is what moves; in VR the headset drives the camera inside it.
+    this.camera.position.set(0, EYE_HEIGHT, 0);
+    // The rig is what moves; in VR the headset drives the camera inside it. The rig stays on the floor (y = 0)
+    // except in seated VR, where it is lifted by `seatLift` (see calibrateHeight).
+    this.seatLift = 0;
+    this.vrBoot = false; // true from sessionstart until the first headset pose arrives (see bootVR)
     this.rig = new THREE.Group();
     this.rig.add(this.camera);
     this.scene.add(this.rig);
@@ -261,7 +264,7 @@ export class Game {
       { kind: 'weapon', title: 'Start', sub: 'Play', desc: level.id === 'castle' ? 'Clear four rooms, claim treasure, and slay the Vampire Lord.' : 'Survive 25 waves. Aim the revolver; magic fires automatically.', apply: () => this.start() },
       { kind: 'bonus', icon: 'home', title: `Level: ${level.name}`, sub: 'Battlefield', desc: level.desc, apply: () => { this.cycleLevel(); this.applyLevelLook(); this.showVrMenu(); } },
       { kind: 'shop', icon: 'gold', title: 'The Crypt', sub: `◆ ${meta.gold} gold`, desc: 'Spend gold on permanent upgrades, including a second life.', apply: () => this.showCryptVR(0) },
-      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
+      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, seated height, HUD placement.', apply: () => this.showSettings(() => this.showVrMenu()) },
     ], (item) => item.apply(), true, { logo: true, art: true });
   }
 
@@ -282,7 +285,7 @@ export class Game {
   showPauseMenu() {
     this.menu.show('PAUSED', 'Press X / Y / A / B again to resume', [
       { kind: 'weapon', icon: 'gun', title: 'Resume', sub: '', desc: 'Back into the fight.', apply: () => this.resume() },
-      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, HUD placement.', apply: () => this.showSettings(() => this.showPauseMenu()) },
+      { kind: 'passive', icon: 'haste', title: 'Settings', sub: 'Comfort', desc: 'Turning, comfort vignette, seated height, HUD placement.', apply: () => this.showSettings(() => this.showPauseMenu()) },
       { kind: 'bonus', icon: 'retry', title: 'Restart', sub: '', desc: 'Abandon this run and start over.', apply: () => this.start() },
     ], (item) => item.apply(), true);
   }
@@ -298,12 +301,30 @@ export class Game {
       { kind: 'passive', icon: 'armor', title: settings.hud === 'wrist' ? 'HUD: Wrist' : 'HUD: Fixed', sub: 'Display',
         desc: settings.hud === 'wrist' ? 'Stats float above your off-hand. Boss HP and alerts stay in view.' : 'Stats are locked to the bottom of your view.',
         apply: () => toggle('hud', ['wrist', 'camera']) },
+      this.heightCard(back),
       { kind: 'passive', icon: 'star', title: `Music: ${settings.music ? 'On' : 'Off'}`, sub: 'Audio',
         desc: 'Procedural soundtrack that intensifies with the fight.', apply: () => { toggle('music', [true, false]); this.music.setEnabled(settings.music); } },
       { kind: 'passive', icon: 'might', title: `Numbers: ${settings.numbers !== false ? 'On' : 'Off'}`, sub: 'Display',
         desc: 'Floating damage numbers over enemies.', apply: () => toggle('numbers', [true, false]) },
       { kind: 'weapon', icon: 'home', title: 'Back', sub: '', desc: 'Return.', apply: back },
     ], (item) => item.apply(), true);
+  }
+
+  // VR settings card for `settings.height`. Choosing Seated measures your eye height right then (sit the way you play);
+  // choosing it again after Real re-measures. Entering VR in Seated mode also re-measures (bootVR).
+  heightCard(back) {
+    const seated = settings.height === 'seated', eye = this.eyeHeight();
+    return {
+      kind: 'passive', icon: 'growth', title: seated ? 'Height: Seated' : 'Height: Real', sub: 'Comfort',
+      desc: seated ? `View lifted ${Math.round(this.seatLift * 100)} cm to standing height. Select for your real height.`
+        : `Your real height${eye ? ` (eyes at ${eye.toFixed(2)} m)` : ''}. Playing seated? Select to lift your view.`,
+      apply: () => {
+        settings.height = seated ? 'real' : 'seated'; saveSettings();
+        if (!seated) this.calibrateHeight();
+        this.rig.position.y = this.eyeLift();
+        this.showSettings(back);
+      },
+    };
   }
 
   resume() {
@@ -355,15 +376,50 @@ export class Game {
       this.title.hide();
       this.overlay.classList.add('hidden');
       this.hud.setMode(settings.hud);
-      this.showVrMenu();
+      // No headset pose yet: the camera still holds the desktop view, so the main menu waits for bootVR().
+      this.state = 'menu';
+      this.menu.hide();
+      this.vrBoot = true;
     });
     this.renderer.xr.addEventListener('sessionend', () => {
       this.state = 'menu';
+      this.vrBoot = false;
+      this.rig.position.y = 0; // desktop camera height is EYE_HEIGHT inside an unlifted rig
       this.menu.hide();
       this.hud.setMode('camera');
       this.title.show();
     });
   }
+
+  // First headset frame with a pose. Until three.js renders in XR the camera keeps the desktop pose (1.6 m up, or
+  // 13.5 m up and behind after a top-down run), so the seated lift and the main menu wait for a real head position.
+  bootVR() {
+    const xr = this.renderer.xr, frame = xr.getFrame(), space = xr.getReferenceSpace();
+    if (!frame || !space || !frame.getViewerPose(space)) return; // tracking not ready yet
+    this.vrBoot = false;
+    this.applyView(); // leave any desktop top-down state behind (scenery cutaway, reticle, cursor)
+    if (settings.height === 'seated') this.calibrateHeight();
+    this.rig.position.y = this.eyeLift();
+    this.rig.updateMatrixWorld(true);
+    xr.updateCamera(this.camera); // sync the user camera to the headset so the menu lands in front of your eyes
+    this.showVrMenu();
+  }
+
+  // Real eye height in VR: the left eye above the local-floor origin, straight from this frame's headset pose
+  // (independent of the rig). 0 outside XR or before the first pose.
+  eyeHeight() {
+    const cam = this.renderer.xr.getCamera();
+    return this.renderer.xr.isPresenting && cam.cameras.length ? cam.position.y : 0;
+  }
+
+  // Seated VR: measure the eye height now and store how far the rig must rise to put it at EYE_HEIGHT.
+  calibrateHeight() {
+    const lift = seatedLift(this.eyeHeight());
+    if (lift !== null) this.seatLift = lift;
+  }
+
+  // How far the rig is raised: the measured seated lift in VR; nothing on desktop or with Height: Real.
+  eyeLift() { return this.renderer.xr.isPresenting && settings.height === 'seated' ? this.seatLift : 0; }
 
   onKey(code) {
     if (this.title.visible && !this.renderer.xr.isPresenting) { this.title.key(code); return; }
@@ -406,7 +462,7 @@ export class Game {
     this.dashT = 0; this.dashReady = 0; this.invulnUntil = 0;
     this.stats = { damage: {} };
     this.hud.toastTimer = 0;
-    this.rig.position.set(0, 0, 0);
+    this.rig.position.set(0, this.eyeLift(), 0); // keep the seated lift across runs
     this.tdCap = TOPDOWN.cap; this.enemies.outlinesAllowed = true; this.slowFrames = 0;
     this.enemies.cap = this.enemyCap();
     if (!this.renderer.xr.isPresenting) {
@@ -673,6 +729,7 @@ export class Game {
   loop() {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const xr = this.renderer.xr.isPresenting;
+    if (xr && this.vrBoot) this.bootVR();
     fxTime.value += dt;
     // game-time scale: hit-stop freezes, slow motion eases back in over its last 0.4 s
     let gs = 1;
@@ -786,7 +843,7 @@ export class Game {
       // desktop-only camera shake (never in the headset: moving the view without the head moving is nauseating)
       this.shake = Math.max(0, this.shake - dt * 2.2);
       const k = this.shake * this.shake * (this.topdown ? 0.25 : 0.06);
-      const [by, bz] = this.topdown ? [TOPDOWN.height, TOPDOWN.back] : [1.6, 0];
+      const [by, bz] = this.topdown ? [TOPDOWN.height, TOPDOWN.back] : [EYE_HEIGHT, 0];
       this.camera.position.set(Math.sin(fxTime.value * 53) * k, by + Math.sin(fxTime.value * 47 + 1) * k, bz);
       this.grade.uniforms.uHurt.value = this.hud.flash;
       this.grade.uniforms.uExposure.value = this.topdown && this.world.level.playerLight > 0 ? 1.18 : 1;
@@ -812,7 +869,7 @@ export class Game {
     this.camera.updateProjectionMatrix();
     this.rig.rotation.set(0, td ? 0 : this.input.yaw, 0);
     if (td) { this.camera.position.set(0, TOPDOWN.height, TOPDOWN.back); this.camera.rotation.set(-Math.atan2(TOPDOWN.height, TOPDOWN.back) + 0.08, 0, 0); }
-    else { this.camera.position.set(0, 1.6, 0); this.camera.rotation.set(this.input.pitch, 0, 0); }
+    else { this.camera.position.set(0, EYE_HEIGHT, 0); this.camera.rotation.set(this.input.pitch, 0, 0); }
     this.avatar.root.visible = td && this.state !== 'menu';
     this.input.freeCursor = td;
     this.menu.attachToCamera = td;

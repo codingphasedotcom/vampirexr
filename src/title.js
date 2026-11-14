@@ -43,6 +43,7 @@ const HOWTO = `
     <li><i style="background:#7fd8ff"></i><b>Relics</b> Magnet pulls every gem, Holy Bomb smites the horde, Hourglass freezes time.</li>
     <li><i style="background:#ffd34d"></i><b>Gold</b> Spend it in the Crypt on permanent upgrades, including a second life.</li>
     <li><i style="background:#9fe8ff"></i><b>Build</b> Six weapon and six passive slots. Every new pick is a commitment.</li>
+    <li><i style="background:#7dff9a"></i><b>Seated VR</b> Settings → Height: Seated lifts your view to standing height.</li>
   </ul>`;
 
 export class TitleScreen {
@@ -129,6 +130,8 @@ export class TitleScreen {
       { label: 'Comfort Vignette', value: onOff(s.vignette), cycle: () => this.onSetting('vignette', !s.vignette) },
       { label: 'Music', value: onOff(s.music), cycle: () => this.onSetting('music', !s.music) },
       { label: 'VR HUD', value: s.hud === 'wrist' ? 'Wrist' : 'Fixed', cycle: () => this.onSetting('hud', s.hud === 'wrist' ? 'camera' : 'wrist') },
+      { label: 'VR Height', value: s.height === 'seated' ? 'Seated' : 'Real', note: s.height === 'seated' ? 'Lifts your view to standing height, measured as you enter VR' : 'Your real height. Pick Seated if you play sitting down',
+        cycle: () => this.onSetting('height', s.height === 'seated' ? 'real' : 'seated') },
       { label: 'Damage Numbers', value: onOff(s.numbers !== false), cycle: () => this.onSetting('numbers', s.numbers === false) },
       { label: 'Screen Shake', value: onOff(s.shake !== false), cycle: () => this.onSetting('shake', s.shake === false) },
       { label: 'Back', back: true, act: () => this.go('main', 6) },

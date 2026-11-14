@@ -2,8 +2,10 @@
 
 > **Keep this file current.** Any change to gameplay rules, module responsibilities, asset pipeline, controls, or deploy flow
 > must be reflected here in the same commit. This is the document a new engineer (human or LLM) reads first.
-> Last updated: 2026-11-11 (v3 overhaul: baked lighting, procedural sky, decals/ribbons/instanced numbers, 3 new weapons,
-> relics, gold + Crypt meta-progression, revival, icon cards/HUD build row, banners, hit-stop, spatial audio, VR haptics).
+> Last updated: 2026-11-13 (VR seated height: `settings.height` lifts a seated player's eyes to 1.6 m; the first VR menu
+> waits for a real headset pose — §4). Previous: 2026-11-11 v3 overhaul (baked lighting, procedural sky,
+> decals/ribbons/instanced numbers, 3 new weapons, relics, gold + Crypt meta-progression, revival, icon cards/HUD build row,
+> banners, hit-stop, spatial audio, VR haptics).
 
 ## 1. What the game is
 
@@ -32,7 +34,7 @@ CLAUDE.md             working rules for AI agents (deploy, testing, docs)
 src/main.js           creates `new Game()` and exposes `window.game` (used for headless testing)
 src/game.js           THE orchestrator: renderer/XR setup, state machine, wave director, menus, damage routing, per-frame loop
 src/settings.js       persisted prefs (localStorage `survivorxr.settings`): turn, turnSpeed, vignette, hud, level, music, view,
-                      numbers, shake
+                      numbers, shake, height; `EYE_HEIGHT` (1.6 m) and `seatedLift()` for seated VR (§4)
 src/meta.js           persistent meta-progression (localStorage `survivorxr.meta`): gold, Crypt UPGRADES, records (§17)
 src/pickups.js        floor pickups: gold coins/bags + relics (Vampire Magnet, Holy Bomb, Frozen Hourglass, Roast Chicken),
                       shock rings
@@ -78,6 +80,8 @@ particles and damage numbers use `gdt`, while player movement, head tracking, HU
 slow motion 0.25× for 1.8 s on a boss kill and 0.3× for 1.2 s on a revive.
 
 Per frame (`loop()`):
+0. VR boot: from `sessionstart` until the first frame with a headset pose, `bootVR()` waits (`vrBoot`), then measures the
+   seated lift, syncs the camera to the headset (`renderer.xr.updateCamera`) and only then shows the VR main menu (§4).
 1. `fxTime += dt` (wall clock for ambient shaders; `this.time` is *game* time and only advances while `playing`).
 2. `glow.begin()` / `ribbons.begin(head)` — every glow / ribbon consumer pushes geometry during the frame; `end()` uploads
    only the used prefix once (`addUpdateRange`).
@@ -105,6 +109,18 @@ Menus are the same `Menu` class everywhere: `menu.show(title, sub, items, onPick
 
 - The **rig** (`THREE.Group`) moves; the camera sits inside it (desktop: yaw on rig, pitch on camera; XR: headset drives camera).
   `player.pos` = head world position projected to y = 0. Turning rotates the rig **around the head** (`rotateRig`).
+- **Eye height.** Desktop: the camera sits at `EYE_HEIGHT` = 1.6 m inside the rig. VR uses the `local-floor` reference space and
+  three.js replaces the camera pose with rig × headset pose, so the view is the player's *real* eye height above the Quest's
+  floor (a seated player sees from ~1.1–1.3 m, under monsters that are 1.7–4 m tall). The rig stays at y = 0 (movement, dash,
+  turning, collisions and siege bounds only touch x/z) except in **seated VR** (`settings.height = 'seated'`):
+  `calibrateHeight()` reads this frame's left-eye height (`eyeHeight()` = `renderer.xr.getCamera().position.y`, independent of
+  the rig) and `seatedLift(eye)` raises the rig by `1.6 − eye` — never lowers anyone, rejects readings under 0.3 m, caps at
+  1.2 m. It is measured on entering VR (`bootVR`) and whenever the VR Height card is switched to Seated; `start()` keeps it
+  (`eyeLift()`), `sessionend` drops it. Controllers and hands are rig children, so they rise with the head.
+- **VR session start:** `sessionstart` fires before the first headset frame, while the camera still holds the desktop pose
+  (1.6 m, or 13.5 m up and 8.5 m back after a top-down run). So it only sets `vrBoot`; `bootVR()` waits for a viewer pose,
+  calls `applyView()` (drops top-down leftovers: scenery cutaway, reticle, cursor), applies the seated lift, syncs the camera
+  with `renderer.xr.updateCamera(camera)` and then calls `showVrMenu()`, which places the cards in front of the real head.
 - **VR controllers:** left stick move (relative to head yaw), right stick turn (smooth 120°/s with quadratic curve, or snap 45°
   per `settings.turn`), trigger = shoot / select, X/Y/A/B = pause.
 - **Hand tracking:** `Input.updateArmSwing` — smoothed wrist speed → forward speed (threshold 0.45 m/s, full at ~2 m/s); pinch
@@ -318,7 +334,10 @@ Details, costs and gotchas live in the memory note `higgsfield-3d-pipeline`. Key
 
 `settings.js` → localStorage. Keys: `turn` (`smooth|snap`), `turnSpeed` (deg/s), `vignette` (bool), `hud` (`wrist|camera`),
 `level` (`graveyard|village|city|castle`), `music` (bool), `view` (`fps|topdown`), `numbers` (damage numbers, bool), `shake`
-(desktop camera shake, bool). Editable from the title screen and the in-VR Settings cards (shake is desktop-only).
+(desktop camera shake, bool), `height` (`real|seated`, VR eye height, default `real`, §4). Editable from the title screen and
+the in-VR Settings cards (shake is desktop-only). VR Settings cards: Turn · Vignette · HUD · Height / Music · Numbers · Back
+(two rows); the Height card shows the measured eye height (Real) or the lift in cm (Seated). The title's Settings and Crypt
+screens hide the logo so their lists stay above the button-hint bar.
 
 ## 12. Testing without a headset (important)
 
@@ -345,8 +364,14 @@ Gotchas found in practice: the pane's screenshot often shows the *previous* comp
 (level switch, view switch) — run a couple of `game.loop()`s and screenshot twice. Classes imported in the console with
 `import('/src/weapons.js')` after a hot reload can be a different module instance, so `instanceof` checks in `getChoices`
 won't match them. Keep single `javascript_tool` calls under ~40 s of simulation (the tool times out at 45 s).
-`node --test tests/*.test.js` runs 23 tests (aim, animation, boss materials, minimap, siege, Crypt economy/records, build
-slots/evolutions, freeze, light probes).
+`node --test tests/*.test.js` runs 27 tests (aim, animation, boss materials, minimap, siege, Crypt economy/records, build
+slots/evolutions, freeze, light probes, seated VR height).
+
+The VR boot / seated-height path can be exercised without a session by faking it and calling the methods directly (never
+`loop()` while faking — the XR render path breaks): set `renderer.xr.isPresenting = true`, push a dummy into
+`renderer.xr.getCamera().cameras` and set its `position.y` (the "real" eye height), stub `getFrame` (`{ getViewerPose }`),
+`getReferenceSpace` and `updateCamera`, `dispatchEvent({ type: 'sessionstart' })`, then call `game.bootVR()` /
+`game.heightCard(back).apply()`. Restore the stubs and dispatch `sessionend` afterwards.
 
 ### Precision combat verification
 

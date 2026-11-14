@@ -95,8 +95,8 @@
     .t-hints { display: flex; gap: 20px; flex-wrap: wrap; }
     .t-ver { opacity: .5; white-space: nowrap; }
 
-    /* the Crypt (permanent upgrades) */
-    #title[data-screen="shop"] .t-left .t-logo { display: none; }
+    /* the Crypt (permanent upgrades) and Settings: long lists, so the logo makes room above the button-hint bar */
+    #title[data-screen="shop"] .t-left .t-logo, #title[data-screen="settings"] .t-left .t-logo { display: none; }
     #title[data-screen="shop"] .t-menu { max-height: calc(100vh - 200px); overflow-y: auto; padding-right: 6px; }
     .t-item.shop { font-size: clamp(15px, 1.7vw, 19px); padding: 6px 16px 6px 22px; }
     .t-item.shop .t-note { display: none; }
